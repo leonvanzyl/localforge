@@ -398,6 +398,114 @@ empty state → new-project dialog → project page → kanban board.
 
 19/86 features passing after this session.
 
+## Session 8 (2026-04-19) - Batch #38, #39, #62, #29, #53
+
+End-to-end kanban card render + sidebar progress + start-orchestrator
+CTA. Five features completed in one batch.
+
+### Completed: Feature #38 Feature card displays title and priority
+
+- Updated components/kanban/feature-card.tsx:
+  - Added a colored priority badge (P1/P2/P3...) in the top-right of
+    every card. Priority badge is sky blue for "style" features, primary
+    for "functional" - so the colour also encodes category at a glance.
+  - Card renders as a button when `onOpen` is provided (future detail
+    modal) or as a static <article> for read-only contexts.
+- Rewrote components/kanban/kanban-board.tsx into a client component
+  that fetches GET /api/projects/:id/features on mount, splits results
+  by `status`, renders a FeatureCard per row inside the matching column,
+  and shows loading / error / ready states.
+
+Verified via playwright-cli with a CARD_TEST_PROJ project containing 3
+features (P1/P2/P3, distinct titles, distributed across columns).
+Screenshot confirms title, priority badge, ID, category badge are all
+visible. Console: 0 errors, 0 warnings.
+
+### Completed: Feature #39 Feature card shows dependency count indicator
+
+- Card already had the amber "🔗 N" badge from a prior agent's draft;
+  rewired it into the new card layout in components/kanban/feature-
+  card.tsx so it sits in the bottom-right under the priority badge,
+  visible only when dependencyCount > 0.
+- /api/projects/:id/features already returns `dependencyCount` per row.
+
+Verified end-to-end with DEPS_TEST_PROJ (Feature A no deps, B deps→A,
+C deps→A+B). Card A shows no badge, B shows "🔗 1", C shows "🔗 2".
+
+### Completed: Feature #53 Empty column placeholder text
+
+- Tuned column emptyHint strings in kanban-board.tsx to match the spec:
+  - Backlog → "No features in backlog"
+  - In Progress → "No features in progress"
+  - Completed → "No completed features yet"
+- Verified placeholder shows when column is empty and disappears when
+  features land in the column. Moved Feature A to in_progress via PATCH
+  /api/features/:id, refreshed, confirmed "No features in progress"
+  text disappeared. Moved A back to backlog, placeholder returned.
+
+### Completed: Feature #62 Start orchestrator button visible and prominent
+
+- Added a "Start Orchestrator" Button to ProjectHeaderActions (top-right
+  of the project page header). Uses Button variant="default" with the
+  primary background, a Play lucide icon, and aria-label "Start
+  orchestrator for {projectName}".
+- Built a thin POST /api/projects/:id/orchestrator endpoint
+  (app/api/projects/[id]/orchestrator/route.ts) that creates a
+  `coding`-type agent_session row (idempotent — if one is already
+  in_progress, it is returned). Also supports {action:"stop"} which
+  closes the active session as terminated.
+- Click verified: button click POSTs, returns 201 with the session,
+  GET .../orchestrator returns the in_progress row. Stopped via
+  {action:"stop"}.
+
+Visual verified: blue primary button with Play icon next to the
+"active" status pill and Delete button in the project header.
+
+### Completed: Feature #29 Project list shows status indicator (X/Y done)
+
+- New helper lib/projects.ts → listProjectsWithProgress() returns each
+  project annotated with featureCount + completedCount. Single SELECT
+  on projects + single SELECT on features + JS aggregation; no JOINs
+  for driver portability.
+- Updated GET /api/projects to use the new helper (additive — old
+  fields untouched).
+- Extended ProjectListItem in shell-context.tsx with optional
+  featureCount/completedCount fields.
+- Sidebar (components/app-shell/sidebar.tsx) now renders a compact
+  "{done}/{total}" badge on the right side of every project link.
+  Badge tinting:
+    * fully complete (and total > 0)  → emerald
+    * active project                  → primary blue
+    * otherwise                       → muted neutral
+  Includes data-feature-total + data-feature-done attributes for tests.
+
+Verification: PROGRESS_TEST project with 5 features (2 completed)
+showed "2/5" in the active style; marking another feature completed
+via PATCH then revisiting the project showed "3/5" as expected. Empty
+project (EMPTY_PROGRESS_TEST) shows "0/0" without errors.
+
+### New / changed files (this session)
+  - components/kanban/feature-card.tsx           (priority badge added)
+  - components/kanban/kanban-board.tsx           (now client; fetches features)
+  - components/kanban/kanban-column.tsx          (count badge in header)
+  - components/app-shell/project-header-actions.tsx (Start Orchestrator)
+  - components/app-shell/sidebar.tsx             (progress badge per row)
+  - components/app-shell/shell-context.tsx      (extended ProjectListItem)
+  - lib/projects.ts                              (listProjectsWithProgress)
+  - app/api/projects/route.ts                    (uses progress helper)
+  - app/api/projects/[id]/orchestrator/route.ts  (NEW)
+
+### Verification
+  - Console clean across all feature pages (0 errors, 0 warnings).
+  - Mock-data grep clean (only the lib/db/index.ts doc comment hit).
+  - All UI is fed from real Drizzle queries; SQL logs visible in
+    server console for every page load.
+  - Test projects (CARD_TEST_PROJ, DEPS_TEST_PROJ, PROGRESS_TEST,
+    EMPTY_PROGRESS_TEST + 3 stragglers from earlier sessions) cleaned
+    up via DELETE ?removeFiles=true.
+
+41/86 features passing after this session.
+
 ## Session 7 (2026-04-19) - Batch #34, #36
 
 ### Completed: Feature #34 Working directory configuration saves and loads
@@ -640,3 +748,75 @@ sufficient to fix the squeeze. So this commit does NOT touch
 sidebar.tsx - the theme agent can commit their sidebar work cleanly.
 
 27/86 features passing after this session.
+
+## Session (2026-04-19) - Feature #18 No horizontal scroll on any viewport
+
+### Task
+
+Verify that at 375px, 768px, and 1920px viewports, no page ever produces
+a horizontal scrollbar, and no element's bounding box extends past the
+right edge of the viewport. Test both the home/empty-state page and an
+open project's kanban board.
+
+### Approach
+
+No source-code changes were needed for this feature. The horizontal-scroll
+behaviour was already fixed in a prior session (Session N, feature #16)
+which switched the kanban from `md:grid-cols-3` to `xl:grid-cols-3` and
+added `min-w-0` to <main> in app-shell.tsx. This session's job was to
+write a reproducible verifier and confirm the fix holds across all three
+required viewports and every top-level route.
+
+### New file
+  - scripts/check-overflow-all.js  - Playwright headless script that:
+      1. Opens /, /settings, and two /projects/:id pages at 375x667,
+         768x1024, and 1920x1080.
+      2. Asserts document.documentElement.scrollWidth <= window.innerWidth.
+      3. Walks every DOM element and flags any whose getBoundingClientRect()
+         right edge exceeds window.innerWidth + 0.5px, skipping descendants
+         of ancestors with overflow-x:hidden|auto|scroll (those create
+         container-level scroll, not page-level).
+      4. Also runs an extra pass at 375px with the mobile sidebar drawer
+         open, to ensure the slide-in nav does not leak past the right edge.
+      5. Captures any page-errors or console.error events.
+
+### Verification (all 14 checks)
+
+```
+PASS home       375x667:  doc=375  body=375  win=375  overflow=0
+PASS settings   375x667:  doc=375  body=375  win=375  overflow=0
+PASS kanban-8   375x667:  doc=375  body=375  win=375  overflow=0
+PASS kanban-10  375x667:  doc=375  body=375  win=375  overflow=0
+PASS home       768x1024: doc=768  body=768  win=768  overflow=0
+PASS settings   768x1024: doc=768  body=768  win=768  overflow=0
+PASS kanban-8   768x1024: doc=768  body=768  win=768  overflow=0
+PASS kanban-10  768x1024: doc=768  body=768  win=768  overflow=0
+PASS home       1920x1080: doc=1920 body=1920 win=1920 overflow=0
+PASS settings   1920x1080: doc=1920 body=1920 win=1920 overflow=0
+PASS kanban-8   1920x1080: doc=1920 body=1920 win=1920 overflow=0
+PASS kanban-10  1920x1080: doc=1920 body=1920 win=1920 overflow=0
+PASS home       375x667 [drawer-open]: overflow=0
+PASS kanban-8   375x667 [drawer-open]: overflow=0
+```
+
+Visual spot-checks captured at:
+  .playwright-cli/page-2026-04-19T11-50-42-575Z.png  (kanban 375)
+  .playwright-cli/page-2026-04-19T11-51-05-171Z.png  (kanban 768)
+  .playwright-cli/page-2026-04-19T11-51-21-459Z.png  (kanban 1920)
+
+All three confirm: sidebar + kanban fit within the viewport, the kanban's
+internal `overflow-x-auto` handles column scrolling gracefully below xl,
+and at xl+ the three-column grid fits side-by-side without overflow.
+
+### Mock-data scan (STEP 5.6)
+
+grep in app|lib|components for globalThis|devStore|dev-store|mockDb|
+mockData|fakeData|sampleData|dummyData|TODO.*real|TODO.*database|STUB|
+MOCK|isDevelopment: only hit is the intentional doc-comment in
+lib/db/index.ts:17 ("never in-memory or globalThis-based storage") - clean.
+
+### Not applicable
+  - STEP 5.7 (server restart persistence): this is a layout/style feature,
+    no CRUD paths touched.
+
+28/86 features passing after this session.
