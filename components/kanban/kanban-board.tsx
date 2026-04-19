@@ -39,9 +39,12 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
     <div
       data-testid="kanban-board"
       data-project-id={projectId}
-      // On mobile: horizontal scrolling flex row. From md up: grid with
-      // three equal columns side-by-side (desktop kanban layout).
-      className="flex h-full gap-4 overflow-x-auto px-6 py-4 md:grid md:grid-cols-3 md:overflow-visible"
+      // Mobile + tablet + small desktop: horizontal scrolling flex row so
+      // each 280px column stays usable even when the sidebar eats most of
+      // the viewport. From xl (1280px) up: grid with three equal columns
+      // side-by-side - at that width the main area is ~992px which is the
+      // first breakpoint that fits 3 * 280px + gaps without overlap.
+      className="flex h-full gap-4 overflow-x-auto px-6 py-4 xl:grid xl:grid-cols-3 xl:overflow-visible"
     >
       {COLUMNS.map((col) => (
         <KanbanColumn

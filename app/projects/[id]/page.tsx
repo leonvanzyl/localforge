@@ -2,6 +2,7 @@ import { notFound } from "next/navigation";
 
 import { getProject } from "@/lib/projects";
 import { KanbanBoard } from "@/components/kanban/kanban-board";
+import { ProjectHeaderActions } from "@/components/app-shell/project-header-actions";
 
 export const dynamic = "force-dynamic";
 
@@ -48,10 +49,14 @@ export default async function ProjectPage({ params }: PageProps) {
               </p>
             )}
           </div>
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <div className="flex items-center gap-3 text-xs text-muted-foreground">
             <span className="rounded-full border border-border px-2 py-0.5">
               {project.status}
             </span>
+            <ProjectHeaderActions
+              projectId={project.id}
+              projectName={project.name}
+            />
           </div>
         </div>
       </header>

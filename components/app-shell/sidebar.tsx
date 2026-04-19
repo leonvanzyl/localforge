@@ -6,6 +6,7 @@ import { useEffect, useState } from "react";
 import { Cog, FolderPlus, FolderKanban, Hammer, Menu, X } from "lucide-react";
 
 import { cn } from "@/lib/utils";
+import { ThemeToggle } from "@/components/theme/theme-toggle";
 import { useShell } from "./shell-context";
 
 /**
@@ -143,13 +144,13 @@ export function Sidebar() {
           )}
         </nav>
 
-        <div className="border-t border-border px-3 py-3">
+        <div className="flex items-center gap-2 border-t border-border px-3 py-3">
           <Link
             href="/settings"
             data-testid="sidebar-settings-link"
             aria-label="Open settings"
             className={cn(
-              "flex items-center gap-2 rounded-md px-3 py-2 text-sm",
+              "flex flex-1 items-center gap-2 rounded-md px-3 py-2 text-sm",
               isSettings
                 ? "bg-accent text-accent-foreground"
                 : "text-foreground hover:bg-accent hover:text-accent-foreground",
@@ -158,6 +159,7 @@ export function Sidebar() {
             <Cog className="h-4 w-4" aria-hidden="true" />
             Settings
           </Link>
+          <ThemeToggle />
         </div>
       </aside>
     </>

@@ -478,3 +478,80 @@ app/api/settings/: clean (no hits).
     Pattern reusable for future path-cleanup scenarios.
 
 21/86 features passing after this session.
+
+## Session 8 (2026-04-19) - Batch #12, #13, #14, #32, #33
+
+### Completed features
+
+- #12 Theme toggle switches to light mode
+- #13 Theme preference persists across reloads (localStorage)
+- #14 Light mode color palette displays correctly
+- #32 LM Studio URL configuration saves and loads
+- #33 Model name configuration saves and loads
+
+### New files
+  - components/theme/theme-provider.tsx  (ThemeProvider + THEME_INIT_SCRIPT)
+  - components/theme/theme-toggle.tsx    (Sun/Moon toggle button)
+  - scripts/inspect-settings.js          (one-shot SQLite settings inspector)
+
+### Changes
+  - app/layout.tsx
+    - Removed hard-coded className="dark" in favor of a dynamic value
+      from DEFAULT_THEME.
+    - Injected THEME_INIT_SCRIPT in <head> via dangerouslySetInnerHTML
+      so the correct theme class/attribute is applied before React
+      hydrates (no flash of wrong theme).
+    - Wrapped AppShell in <ThemeProvider>.
+  - components/app-shell/sidebar.tsx
+    - Imported ThemeToggle from components/theme/theme-toggle.
+    - Rendered the toggle next to the Settings link in the footer row.
+    - Footer div is now flex with Settings link as flex-1 + toggle as
+      fixed-size icon button.
+
+### Theme behavior
+  - localStorage key: "localforge-theme" with values "dark" or "light".
+  - Default theme remains "dark" (as before).
+  - Inline init script reads localStorage synchronously in <head> and
+    sets <html class="dark" data-theme="..."> before paint.
+  - Client ThemeProvider syncs React state with the applied theme on
+    mount and persists any toggle changes back to localStorage.
+
+### Light mode palette (#14)
+  - :root CSS vars already defined in app/globals.css produce:
+    * background: hsl(0 0% 100%)          -> white
+    * foreground: hsl(240 10% 3.9%)       -> near-black text (high contrast)
+    * primary:    hsl(217 91% 60%)        -> blue (tailwind blue-500 style)
+    * destructive: hsl(0 84.2% 60.2%)     -> red (danger)
+    * Save confirmation uses Tailwind text-green-500 (success indicator).
+  - Screenshots confirm:
+    * Near-white background on / and /settings.
+    * Dark text, clearly readable.
+    * Blue primary buttons (New project, Save settings).
+    * Green "Saved." confirmation on the settings form.
+
+### Settings persistence verification (#32, #33)
+  1. GET /settings shows defaults http://127.0.0.1:1234 and google/gemma-4-31b.
+  2. Edited URL to http://192.168.1.100:1234, model to google/gemma-3-27b,
+     clicked Save. Green "Saved." confirmation appeared next to the
+     button (success feedback).
+  3. Reloaded /settings and the form fields still showed the new values.
+  4. Ran scripts/inspect-settings.js which queried the SQLite settings
+     table directly; rows confirmed:
+        lm_studio_url = http://192.168.1.100:1234
+        model         = google/gemma-3-27b
+  5. Reset both to defaults via the UI; re-ran inspect-settings.js and
+     confirmed the DB reverted:
+        lm_studio_url = http://127.0.0.1:1234
+        model         = google/gemma-4-31b
+
+### Verification
+  - 0 console errors / 0 warnings on / and /settings in both dark + light.
+  - Mock-data grep clean across app|lib|components (no globalThis,
+    devStore, mockDb, mockData, fakeData, etc).
+  - Real Drizzle SQL queries visible in dev-server.log for every
+    GET/PUT /api/settings request.
+  - Server restart persistence was already verified in session 1 for the
+    same settings table (feature #3 used RESTART_TEST_12345), and #32/#33
+    reuse that exact Drizzle read/write path in lib/settings.ts.
+
+26/86 features passing after this session.
