@@ -34,9 +34,19 @@ const page = await ctx.newPage();
 
 try {
   // --- #77: badge on feature card ---
+  // SSE streams (orchestrator log feed) keep network "active" indefinitely,
+  // so we can't wait for networkidle — use domcontentloaded + explicit
+  // locator waits below.
   await page.goto(`${baseUrl}/projects/${projectId}`, {
-    waitUntil: "networkidle",
+    waitUntil: "domcontentloaded",
   });
+
+  // If the project is "completed", the page shows a celebration screen by
+  // default. Click "View kanban" to reveal the actual board.
+  const viewKanban = page.getByRole("button", { name: /view kanban/i });
+  if (await viewKanban.isVisible().catch(() => false)) {
+    await viewKanban.click();
+  }
 
   // Pass badge
   const passBadge = page.locator(
@@ -146,8 +156,8 @@ try {
     (f) => f.title === "BATCH_DUP_SAFETY",
   ).length;
 
-  // Open add-feature modal
-  await page.locator('[data-testid="add-feature-trigger"]').click();
+  // Open add-feature modal — the button lives in the Backlog column header
+  await page.locator('[data-testid="kanban-column-add-backlog"]').click();
   const titleInput = page.locator('[data-testid="add-feature-title-input"]');
   await titleInput.waitFor({ state: "visible", timeout: 3000 });
   // Use a unique title so we can count precisely even across retries

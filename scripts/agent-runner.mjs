@@ -476,9 +476,12 @@ async function main() {
     );
   }
 
-  // Run the spec we just wrote. Even when it fails we keep `outcome`
-  // untouched so the orchestrator's retry/advance logic behaves the same as
-  // before — the test_result log tells the user exactly what happened.
+  // Run the spec we just wrote. If Playwright reports a failure (even a
+  // single failed test), flip the run outcome to "failure" so the
+  // orchestrator demotes the feature back to the backlog instead of
+  // marking it completed. Feature #76 step 5 requires "If tests fail,
+  // verify the feature is marked as failed (not completed)".
+  let playwrightFailed = false;
   if (specInfo) {
     emitLog(`Running Playwright spec for feature #${featureId}`, "action");
     const tr = await runPlaywrightTests({
@@ -490,6 +493,9 @@ async function main() {
     emitLog(summary, "test_result");
     if (!tr.ok && tr.error) {
       emitLog(`Playwright error detail: ${tr.error}`, "error");
+    }
+    if (!tr.ok) {
+      playwrightFailed = true;
     }
 
     // Only surface the screenshot log if the PNG actually landed on disk —
@@ -513,6 +519,16 @@ async function main() {
         "error",
       );
     }
+  }
+
+  if (playwrightFailed) {
+    emitLog(
+      "Verification failed — Playwright reported test failures",
+      "error",
+    );
+    emit({ type: "done", outcome: "failure", reason: "playwright tests failed" });
+    process.stdout.write("", () => process.exit(0));
+    return;
   }
 
   emitLog("All verification steps passed", "info");

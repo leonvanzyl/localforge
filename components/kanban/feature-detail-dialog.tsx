@@ -314,16 +314,22 @@ export function FeatureDetailDialog({
   }, []);
 
   // Feature #79: keyboard navigation inside the lightbox.
-  //   Esc        — close
+  //   Esc        — close the lightbox (NOT the parent dialog)
   //   ←          — previous screenshot
   //   →          — next screenshot
-  // Only bind the listener when the lightbox is actually open so keystrokes
-  // in the rest of the form (e.g. typing in textareas) are unaffected.
+  //
+  // We bind in the *capture* phase and call `stopImmediatePropagation` on
+  // Escape so the parent Dialog's own document-level Escape handler doesn't
+  // also fire and close the whole feature-detail modal. Only the innermost
+  // overlay (the lightbox) should react to Escape while it's open.
+  // Arrow keys don't need the same treatment because the Dialog doesn't
+  // bind them.
   React.useEffect(() => {
     if (lightboxIndex == null) return;
     function onKey(e: KeyboardEvent) {
       if (e.key === "Escape") {
         e.preventDefault();
+        e.stopImmediatePropagation();
         closeLightbox();
       } else if (e.key === "ArrowLeft") {
         e.preventDefault();
@@ -333,8 +339,9 @@ export function FeatureDetailDialog({
         showNext();
       }
     }
-    window.addEventListener("keydown", onKey);
-    return () => window.removeEventListener("keydown", onKey);
+    document.addEventListener("keydown", onKey, { capture: true });
+    return () =>
+      document.removeEventListener("keydown", onKey, { capture: true });
   }, [lightboxIndex, closeLightbox, showPrev, showNext]);
 
   function addDep(raw: string) {
