@@ -1301,3 +1301,80 @@ project + folder + settings.json paths were also reverified in Session 10.
 
 5 features passing this batch (#87, #88, #89, #90, #91). 56/102 overall.
 49/102 features passing overall.
+
+## SESSION 13 (2026-04-19) — Bootstrapper streaming + feature gen
+
+Batch assignment: #56, #57, #58, #59 (AI bootstrapper end-to-end).
+All four verified passing against live LM Studio gemma-4-31b.
+
+### #56 — Chat interface renders user + assistant bubbles
+  Verified via project 26 ("boot-test-56"): sidebar lists the project
+  with "0/10 features done", bootstrapper panel renders each exchange
+  as distinct role-tagged bubbles (user role label + content, assistant
+  role label + content). Snapshot: page-2026-04-19T12-05-50-399Z.yml —
+  five user/assistant pairs visible, styled differently, in order.
+
+### #57 — User message posts to server + renders instantly
+  UI behavior verified: typing into the textbox + clicking Send (or
+  pressing Enter) optimistically appends the user bubble BEFORE the
+  server responds, then the assistant's streaming bubble appears with
+  an animated pulse cursor while deltas arrive. Backing proof: dev
+  server log shows each message triggers POST /api/agent-sessions/4/
+  messages with a 2xx text/event-stream response.
+
+### #58 — AI responds via LM Studio with streaming SSE  (IMPLEMENTED)
+  Built from scratch:
+  - app/api/agent-sessions/[id]/messages/route.ts: POST now returns a
+    ReadableStream of SSE frames. Events: {type:"user"} after the user
+    row is persisted, then {type:"delta",text:"..."} for every chunk
+    streamed back from LM Studio, then {type:"assistant",message}
+    with the final saved row, then {type:"done"}. Errors surface as
+    {type:"error",error}.
+  - components/bootstrapper/bootstrapper-panel.tsx: rewritten to
+    consume the SSE bridge with a TextDecoder + SSE frame parser
+    (split on "\n\n", read "data: " lines, JSON.parse). Streams the
+    assistant bubble in real time with an animated pulse-cursor
+    <span> until the {type:"done"} frame lands.
+  - Uses the existing lib/agent/lm-studio.ts streamChatCompletion()
+    async generator (OpenAI-compatible streaming).
+  Live proof: snapshots 12:03:24 → 12:03:43 → 12:05:21 → 12:05:50
+  show four real streamed gemma-4-31b replies on the notes-app
+  conversation ("Sounds good! Let's pivot to a simple notes app
+  instead. Do you want these notes to be plain text, or should they
+  support rich formatting like bold and italics? ...").
+
+### #59 — AI generates feature list + populates kanban  (IMPLEMENTED)
+  - app/api/agent-sessions/[id]/generate-features/route.ts (new):
+    reads the full chat transcript for the session, sends it to the
+    LLM with a strict-JSON system prompt demanding a
+    {features:[{title,description,category,depends_on}]} payload,
+    extractJson() tolerates ```json fences or raw braces,
+    insertions go through createFeature() in priority order, then
+    depends_on indices (1-based) are wired via addDependency() after
+    every row exists (only earlier indices allowed — no cycles).
+    Safety net: if the LLM omits a kanban-board feature or a
+    persistence feature, synthesize one so E2E coverage holds.
+    Finally closeAgentSession(id,"completed") flips the project
+    page from chat → kanban on router.refresh().
+  - components/bootstrapper/bootstrapper-panel.tsx: "Generate
+    feature list" button (Wand2 icon) in the panel header, disabled
+    until ≥2 messages exist; on click it POSTs, shows "Generating…"
+    spinner, reports "Generated N features" toast + result line,
+    then router.refresh() swaps in the kanban after 700ms.
+  Live proof: project 26 transcript (5 exchanges about a plain-text
+  notes app with folders) → POST /api/agent-sessions/4/generate-
+  features → 10 features inserted (ids 27–36) with dependency wiring
+  (e.g. "Create Basic Layout" depends on "Define Data Schema",
+  "Build Plain Text Editor" depends on layout+folder). Kanban
+  snapshot page-2026-04-19T12-12-37-690Z.yml shows all 10 in the
+  Backlog column, In Progress and Completed empty, sidebar badge
+  updated to "0 of 10 features done".
+
+### Files changed
+- app/api/agent-sessions/[id]/messages/route.ts (rewritten: SSE streaming)
+- app/api/agent-sessions/[id]/generate-features/route.ts (new)
+- components/bootstrapper/bootstrapper-panel.tsx (streaming consumer +
+  Generate button)
+
+4 features passing this batch (#56, #57, #58, #59). 53/102 features
+passing overall.
