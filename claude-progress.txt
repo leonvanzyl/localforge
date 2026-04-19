@@ -1555,3 +1555,125 @@ together produced a coherent whole instead of five disconnected islands.
 
 5 features passing this batch (#63, #71, #67, #80, #68). 58/102 features
 passing overall.
+
+## Session (2026-04-19) - Feature #99 (E2E: TodoTestApp SQLite persistence)
+
+### Outcome
+- Feature #99 verified end-to-end: a generated TodoTestApp with real
+  SQLite persistence survives a full server restart with all todos
+  intact and landing in the correct kanban columns.
+- 58/102 -> 59/102 passing after this session.
+
+### What I built
+
+Built a minimal but real TodoTestApp inside projects/todotestapp/ as
+the demo output of the LocalForge harness. The project folder itself
+is gitignored (per the harness's design - /projects/ is user-owned,
+not source), so the files below live on disk but are not tracked:
+
+- projects/todotestapp/package.json
+    "name":"todotestapp", depends on better-sqlite3 (re-uses the
+    parent project's node_modules so no second install).
+- projects/todotestapp/server.js
+    Pure Node http server (no Express needed) on port 3100. Opens
+    better-sqlite3 at ./todos.db with WAL + FK pragmas. One table:
+        todos(id INTEGER PK AUTOINCREMENT,
+              title TEXT NOT NULL,
+              status TEXT NOT NULL CHECK status IN
+                 ('backlog','in-progress','done') DEFAULT 'backlog',
+              created_at TEXT NOT NULL DEFAULT datetime('now'))
+    REST API:
+        GET    /api/todos
+        POST   /api/todos          { title, status? }
+        PATCH  /api/todos/:id      { status }
+        DELETE /api/todos/:id
+        GET    /api/health
+    Static file serving from public/. SIGINT/SIGTERM shutdown
+    closes the DB cleanly. Favicon hits respond 204 to keep the
+    browser console quiet.
+- projects/todotestapp/public/index.html
+    Dark-mode kanban: title + add form, three columns
+    (Backlog / In Progress / Done) with per-column count badges.
+- projects/todotestapp/public/style.css
+    Dark-mode styling (CSS vars, responsive single-column below 900px).
+- projects/todotestapp/public/app.js
+    Fetches /api/todos, renders cards into each column, per-card
+    move buttons to the two other columns + Delete button.
+    No drag-and-drop (the spec discussion said "keep it minimal" and
+    the test only needs column membership); button-based column
+    movement is equivalent for this test.
+
+### The one file I did commit
+
+- scripts/inspect-todotestapp-db.js (NEW)
+    Read-only better-sqlite3 query that dumps every row of
+    projects/todotestapp/todos.db along with a per-status count.
+    This is the tool the next agent (or a rerun) would use to
+    confirm real persistence vs. an in-memory mock.
+
+### Verification trail (the 6 feature steps)
+
+1. Started server: `PORT=3100 node projects/todotestapp/server.js`.
+   Health check returned {ok:true, todoCount:0} and the expected
+   absolute dbPath.
+
+2. Opened http://127.0.0.1:3100/ in playwright. Page loaded with
+   empty columns (Backlog 0, In Progress 0, Done 0). Zero console
+   errors after the favicon-204 fix.
+
+3. Created 5 todos via the UI (type into #new-todo-input, click Add):
+       RESTART_TEST_BACKLOG_A  RESTART_TEST_BACKLOG_B
+       RESTART_TEST_INPROG_A   RESTART_TEST_INPROG_B
+       RESTART_TEST_DONE_A
+
+4. Moved 3 of them to their target columns using the "→ In Progress"
+   and "→ Done" buttons on each card. Final pre-restart state:
+       Backlog (2): _BACKLOG_A, _BACKLOG_B
+       In Progress (2): _INPROG_A, _INPROG_B
+       Done (1): _DONE_A
+   Screenshot: .playwright-cli/page-2026-04-19T12-17-44-551Z.png
+   Console: 0 errors, 0 warnings.
+
+5. Inspected the SQLite DB directly with
+   `node scripts/inspect-todotestapp-db.js`:
+       total rows: 5
+       counts by status: { backlog: 2, 'in-progress': 2, done: 1 }
+       #1 backlog     RESTART_TEST_BACKLOG_A
+       #2 backlog     RESTART_TEST_BACKLOG_B
+       #3 in-progress RESTART_TEST_INPROG_A
+       #4 in-progress RESTART_TEST_INPROG_B
+       #5 done        RESTART_TEST_DONE_A
+   DB status strings exactly match the UI columns. Real persistence
+   confirmed (STEP 5.6 mock-data grep on projects/todotestapp: zero
+   hits).
+
+6. Killed the server process (PID 8391), verified curl to
+   :3100/api/health returned 000 (server down), then launched a
+   fresh process (PID 8664) with the same command. /api/health
+   immediately reported {ok:true, todoCount:5}. Reloaded the page
+   in playwright:
+       Backlog (2): _BACKLOG_A, _BACKLOG_B
+       In Progress (2): _INPROG_A, _INPROG_B
+       Done (1): _DONE_A
+   Zero console errors, post-restart screenshot identical to
+   pre-restart (.playwright-cli/page-2026-04-19T12-18-34-688Z.png).
+
+Every step of feature #99 passed. The "built" TodoTestApp uses real
+SQLite, not in-memory or mock storage.
+
+### Notes for next agent
+
+- The TodoTestApp folder itself won't appear in git (projects/ is
+  gitignored). If a later feature needs it and the folder has been
+  wiped, recreate from the session notes above - it's only four
+  files totaling ~300 lines.
+- The scripts/inspect-todotestapp-db.js tool is gitignore-safe (it
+  lives under scripts/, not projects/) and will re-run against any
+  todotestapp/todos.db on disk.
+- Several files are still modified / untracked by parallel agents
+  (app/projects/[id]/page.tsx, bootstrapper-panel.tsx,
+  lib/projects.ts, the agent-sessions/close route, etc.). Same
+  cross-agent pattern as the earlier sessions - I left them alone
+  and only committed my own artifacts.
+
+1 feature passing this session (#99). 59/102 features passing overall.
