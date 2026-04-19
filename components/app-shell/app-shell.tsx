@@ -17,17 +17,19 @@ import { AgentNotifications } from "@/components/agent/agent-notifications";
 export function AppShell({ children }: { children: ReactNode }) {
   return (
     <ShellProvider>
-      <div className="flex min-h-screen w-full bg-background text-foreground">
+      <div className="flex h-screen w-full bg-background text-foreground">
         <Sidebar />
-        {/* min-w-0 is critical: without it the main's content (e.g. the
-            kanban's min-w-[280px] columns) would expand the flex item and
-            squash the fixed-width sidebar on narrow viewports like
-            tablets. min-w-0 lets flex-1 honour the remaining space. */}
+        {/* h-screen + min-h-0 on the flex item pins the shell row to the
+            viewport height, so the sidebar's internal overflow-y-auto
+            and the project page's nested overflow-hidden both bite
+            instead of the whole document scrolling. min-w-0 still
+            prevents wide content (kanban's min-w-[280px] columns) from
+            squashing the fixed-width sidebar on narrow viewports. */}
         <main
           id="main-content"
           data-testid="main-content"
           role="main"
-          className="flex min-h-screen min-w-0 flex-1 flex-col"
+          className="flex h-screen min-h-0 min-w-0 flex-1 flex-col overflow-hidden"
         >
           {children}
         </main>
