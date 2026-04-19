@@ -1,9 +1,15 @@
 import "server-only";
 import path from "node:path";
 import fs from "node:fs";
-import { eq } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import { db } from "./db";
-import { projects, features, settings } from "./db/schema";
+import {
+  projects,
+  features,
+  settings,
+  agentSessions,
+  agentLogs,
+} from "./db/schema";
 import { getProjectEffectiveSettings } from "./settings";
 
 /**
@@ -81,6 +87,22 @@ export function getDefaultLmStudioUrl(): string {
 
 export function getDefaultModel(): string {
   return getGlobalSetting("model") || DEFAULT_MODEL;
+}
+
+/**
+ * Parse a timestamp string stored by SQLite or by our ISO-emitting code.
+ * SQLite's `CURRENT_TIMESTAMP` default yields "YYYY-MM-DD HH:MM:SS" which
+ * `Date.parse` does not reliably treat as UTC across runtimes. Our own
+ * `updateProject` writes ISO-8601 ("YYYY-MM-DDTHH:MM:SS.sssZ"). Normalise
+ * both to ms-since-epoch; returns null on an unparseable value.
+ */
+function parseTimestamp(raw: string): number | null {
+  if (!raw) return null;
+  // If the string already looks like ISO 8601 (contains a T), let Date parse
+  // it directly — that path is unambiguous.
+  const iso = raw.includes("T") ? raw : raw.replace(" ", "T") + "Z";
+  const ms = Date.parse(iso);
+  return Number.isFinite(ms) ? ms : null;
 }
 
 function pickUniqueFolder(base: string, slug: string): string {
@@ -286,4 +308,135 @@ export function updateProject(
       .returning()
       .get() ?? null
   );
+}
+
+/**
+ * Completion statistics surfaced by the celebration screen (Feature #101).
+ *
+ * - `featureCount`  total features in the project
+ * - `passedCount`   features with status='completed'
+ * - `testsPassedCount` count of agent_log rows with messageType='test_result'
+ *   across every coding session for this project (so the splash can brag
+ *   about how many tests the agents ran)
+ * - `startedAt` / `completedAt` / `durationMs` frame the wall-clock time the
+ *   project took. `startedAt` = project.createdAt; `completedAt` = the
+ *   project's updated_at, which `markProjectCompletedIfAllDone` stamps when
+ *   the status transitions to "completed".
+ *
+ * Shape is intentionally small + serialisable so it can flow through the
+ * API route and into the client component unchanged.
+ */
+export type ProjectCompletionStats = {
+  status: string;
+  featureCount: number;
+  passedCount: number;
+  testsPassedCount: number;
+  startedAt: string;
+  completedAt: string | null;
+  durationMs: number | null;
+};
+
+/**
+ * Compute summary numbers for the celebration screen. Returns `null` when the
+ * project does not exist. Safe to call regardless of the project's current
+ * status — the caller (API route / component) decides how to render based on
+ * `status`.
+ */
+export function getProjectCompletionStats(
+  projectId: number,
+): ProjectCompletionStats | null {
+  const project = getProject(projectId);
+  if (!project) return null;
+
+  const featureRows = db
+    .select({ status: features.status })
+    .from(features)
+    .where(eq(features.projectId, projectId))
+    .all();
+  const featureCount = featureRows.length;
+  const passedCount = featureRows.filter((r) => r.status === "completed").length;
+
+  // Count test_result log rows for every coding session belonging to this
+  // project. We do this via a JOIN on agent_sessions so tests logged on the
+  // bootstrapper chat (which shouldn't exist, but defence in depth) are
+  // ignored and not surfaced as fake "tests passed" numbers.
+  const sessions = db
+    .select({ id: agentSessions.id })
+    .from(agentSessions)
+    .where(
+      and(
+        eq(agentSessions.projectId, projectId),
+        eq(agentSessions.sessionType, "coding"),
+      ),
+    )
+    .all();
+  const sessionIds = new Set(sessions.map((s) => s.id));
+  let testsPassedCount = 0;
+  if (sessionIds.size > 0) {
+    const logs = db
+      .select({
+        sessionId: agentLogs.sessionId,
+        messageType: agentLogs.messageType,
+      })
+      .from(agentLogs)
+      .where(eq(agentLogs.messageType, "test_result"))
+      .all();
+    for (const l of logs) {
+      if (sessionIds.has(l.sessionId)) testsPassedCount += 1;
+    }
+  }
+
+  const startedAt = project.createdAt;
+  const completedAt =
+    project.status === "completed" ? project.updatedAt : null;
+  let durationMs: number | null = null;
+  if (completedAt) {
+    const start = parseTimestamp(startedAt);
+    const end = parseTimestamp(completedAt);
+    if (start != null && end != null && end >= start) {
+      durationMs = end - start;
+    }
+  }
+
+  return {
+    status: project.status,
+    featureCount,
+    passedCount,
+    testsPassedCount,
+    startedAt,
+    completedAt,
+    durationMs,
+  };
+}
+
+/**
+ * Flip a project's status to "completed" when every feature in it has reached
+ * the `completed` state (Feature #101 — celebration screen).
+ *
+ * Idempotent + cheap to call on every successful coding-session finish:
+ * - Returns `null` when the project does not exist, has zero features, or is
+ *   already marked completed.
+ * - Returns the freshly-updated project record when we transitioned it.
+ *
+ * Callers (orchestrator `finalizeSession`) use the non-null return as a signal
+ * to broadcast a project-level event so the UI can surface the celebration
+ * screen without polling.
+ */
+export function markProjectCompletedIfAllDone(
+  projectId: number,
+): ProjectRecord | null {
+  const project = getProject(projectId);
+  if (!project) return null;
+  if (project.status === "completed") return null;
+
+  const rows = db
+    .select({ status: features.status })
+    .from(features)
+    .where(eq(features.projectId, projectId))
+    .all();
+
+  if (rows.length === 0) return null;
+  if (!rows.every((r) => r.status === "completed")) return null;
+
+  return updateProject(projectId, { status: "completed" });
 }

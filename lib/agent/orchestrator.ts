@@ -100,6 +100,12 @@ type RunningSession = {
   child: ChildProcessWithoutNullStreams;
   stdoutBuffer: string;
   stderrBuffer: string;
+  /**
+   * Options the session was started with. Preserved so Feature #70's
+   * auto-continue loop can pass the same outcome/durationMs to the next
+   * feature without the caller having to re-specify them.
+   */
+  options: StartOptions;
 };
 
 type OrchestratorState = {
@@ -312,6 +318,10 @@ export function startOrchestrator(
     child,
     stdoutBuffer: "",
     stderrBuffer: "",
+    options: {
+      outcome: options.outcome,
+      durationMs: options.durationMs,
+    },
   };
   getState().running.set(session.id, rs);
 
@@ -679,12 +689,18 @@ function finalizeSession(
   // if so, flip its status + broadcast a one-shot event so the UI can react.
   // The helper is idempotent so it is safe to call from every successful
   // finalize (it returns null when nothing changed).
+  //
+  // Feature #70 — auto-continue loop. If the project is NOT fully done but
+  // has another ready feature in the backlog, spawn the next coding session
+  // automatically so the user doesn't have to click Start between features.
   if (outcome === "success") {
+    let projectIsDone = false;
     try {
       const completedProject = markProjectCompletedIfAllDone(
         rs.session.projectId,
       );
       if (completedProject) {
+        projectIsDone = true;
         broadcast({
           type: "project_completed",
           sessionId: rs.session.id,
@@ -697,7 +713,57 @@ function finalizeSession(
       // eslint-disable-next-line no-console
       console.error("[localforge] project completion check failed:", err);
     }
+
+    if (!projectIsDone) {
+      maybeContinueWithNextFeature(rs);
+    }
   }
+}
+
+/**
+ * Feature #70 — "orchestrator continues to next feature after completion".
+ *
+ * After a successful finalize we check whether another backlog feature is
+ * ready (all dependencies met) and, if so, spawn a fresh session for it. The
+ * call is wrapped in `setImmediate` so we unwind the current call stack (and
+ * release the `getState().running` map slot we just deleted above) before
+ * the new `startOrchestrator` sees the state — otherwise the idempotent
+ * "existing session" branch could wedge on the just-finalized id.
+ *
+ * We intentionally re-use the same StartOptions (outcome / durationMs) as the
+ * session that just finished. That means a test calling the orchestrator
+ * with `{outcome:"success", durationMs:500}` will keep chaining short
+ * deterministic successes through every ready feature without needing to
+ * re-POST between each one.
+ *
+ * Errors are swallowed + logged. Auto-continue is a convenience; any failure
+ * leaves the kanban in the state the user saw right after completion (the
+ * Start button will simply come back).
+ */
+function maybeContinueWithNextFeature(rs: RunningSession): void {
+  const projectId = rs.session.projectId;
+  const options = rs.options;
+
+  setImmediate(() => {
+    try {
+      // Recheck readiness — the previous feature may have been the last in
+      // its dependency chain, in which case the project_completed path
+      // handles it and we have nothing to start.
+      const next = findNextReadyFeatureForProject(projectId);
+      if (!next) return;
+
+      // startOrchestrator is idempotent; if something else already spun up a
+      // session for this project (e.g. a user clicked Start in parallel) it
+      // returns the existing one instead of creating a duplicate.
+      startOrchestrator(projectId, options);
+    } catch (err) {
+      // eslint-disable-next-line no-console
+      console.error(
+        "[localforge] auto-continue to next feature failed:",
+        err,
+      );
+    }
+  });
 }
 
 /**
