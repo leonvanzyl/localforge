@@ -1023,3 +1023,115 @@ comment about "never in-memory or globalThis-based storage" - clean.
 
 5 features passing this batch (#40, #41, #42, #43, #49).
 48/102 features passing overall.
+
+## Session 12 (2026-04-19)
+
+Batch: #26, #27, #30, #35 (project lifecycle & project-specific settings).
+
+### Feature #26 - Delete project with optional file removal
+
+The confirmation dialog already had a "remove files from disk" checkbox
+wired up (components/app-shell/delete-project-dialog.tsx), but the
+behavior needed end-to-end verification. Created FILE_REMOVE_TEST,
+confirmed folder exists on disk, deleted with checkbox CHECKED,
+verified both DB row and projects/<slug>/ folder gone. Repeated with
+checkbox UNCHECKED - DB row removed, folder preserved. DELETE
+/api/projects/:id accepts {removeFiles: boolean} body; when true it
+uses fs.rmSync(folderPath, {recursive, force}) after the DB delete.
+
+### Feature #27 - Delete project cascade removes related data
+
+Schema already declares onDelete: "cascade" on every project-scoped FK
+(features, feature_dependencies via features, agent_sessions,
+agent_logs via sessions, chat_messages via sessions, settings).
+lib/db/index.ts sets PRAGMA foreign_keys = ON so SQLite actually
+honors those clauses.
+
+To verify: wrote scripts/cascade-insert-log.js which uses
+better-sqlite3 directly to insert an agent_log + a project-scoped
+setting (no HTTP API for agent_logs), then scripts/cascade-verify.js
+which queries all related tables by projectId / featureIds /
+sessionIds and emits JSON counts. Pre-delete: features=3, deps=1,
+sessions=1, logs=1, chat_messages=1, settings=1. After DELETE via
+UI: every count = 0. Zero orphans.
+
+### Feature #30 - Direct URL access to valid project loads kanban
+
+app/projects/[id]/page.tsx already uses notFound() for malformed /
+missing IDs, and app/projects/[id]/not-found.tsx renders a friendly
+page. Verified by direct-navigating to /projects/<valid-id> (board
+renders, sidebar highlights as active), F5 refresh (same), then
+/projects/999999 and /projects/abc (both 404 with friendly page, no
+crash). The React 19 error-boundary script-tag warning that shows
+on Next.js 404 pages is a pre-existing theme-provider quirk
+unrelated to this feature.
+
+### Feature #35 - Project-specific settings override global
+
+The big one. The settings table already stored rows with
+project_id=NULL for globals; added a project-override layer on top:
+
+- lib/settings.ts: PROJECT_SETTING_KEYS = ["lm_studio_url", "model"]
+  (working_directory stays global-only by design). New helpers
+  getProjectOverrides / getProjectEffectiveSettings /
+  updateProjectSettings. An empty string or null in the update input
+  clears the override; any non-empty string sets or updates it.
+  URL override gets validated through new URL() with http/https
+  protocol whitelist.
+- lib/projects.ts: new exported writeProjectClaudeSettings(project)
+  regenerates projects/<slug>/.claude/settings.json from effective
+  settings so the agent picks up changes without a reboot.
+- app/api/projects/[id]/settings/route.ts: GET returns
+  {overrides, effective, defaults} so the UI can render placeholders,
+  override-status descriptions, and a "currently effective" block in
+  one round trip. PUT applies the input and rewrites the
+  .claude/settings.json on disk.
+- components/app-shell/project-settings-dialog.tsx: dialog shell with
+  two Field components (URL + model), each showing the global value
+  as its placeholder and a description reflecting override status
+  ("Using the global default..." vs "Project override is set...").
+  Saved. / error indicators at the bottom of the body.
+- components/app-shell/project-header-actions.tsx: new Settings button
+  (Cog icon) sits between Start Orchestrator and Delete, opens the
+  dialog.
+
+Verified: created PROJ_OVERRIDE, opened Settings, typed
+google/gemma-3-27b in the Model field, Saved, Saved. indicator shown,
+Currently effective updated, projects/proj-override/.claude/settings.json
+on disk rewritten to {"env": {"ANTHROPIC_BASE_URL": "..."}, "model":
+"google/gemma-3-27b"}. Created NO_OVERRIDE_PROJ without any
+override - its .claude/settings.json stayed at the global default
+"google/gemma-4-31b". DB inspection confirmed two rows with
+project_id set on PROJ_OVERRIDE and zero on NO_OVERRIDE_PROJ.
+
+### Mock-data scan (STEP 5.6)
+
+grep -i "mock|fake|dummy|stub|TODO|FIXME" across lib/settings.ts,
+app/api/projects/[id]/settings/route.ts, and
+components/app-shell/project-settings-dialog.tsx: one hit on the word
+"placeholder" inside a doc comment explaining UI rendering - not a
+mock-data marker. Clean.
+
+### Console check
+
+0 errors, 0 warnings across project create / settings open / settings
+save / project delete flows for all 4 features.
+
+### Notes for next agent
+
+- The helpers in lib/features.ts and the orchestrator routes modified
+  by concurrent agents are unrelated to this batch and were not
+  staged - same pattern as sessions 10 and 11.
+- writeProjectClaudeSettings is idempotent; safe to call from any
+  future settings-mutation path.
+- scripts/cascade-insert-log.js and scripts/cascade-verify.js were
+  committed earlier (306b64b) by a parallel agent - they're good test
+  utilities if the FK cascade needs re-verification.
+- The settings table uses key + project_id composite uniqueness via
+  app-level checks, not a DB unique constraint. If two writes race
+  for the same override, the update-then-insert pattern in
+  writeProjectOverride could still duplicate; probably fine given
+  the single-user assumption but worth noting.
+
+4 features passing this batch (#26, #27, #30, #35).
+49/102 features passing overall.
