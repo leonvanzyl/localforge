@@ -111,6 +111,10 @@ export function FeatureDetailDialog({
   const [status, setStatus] = React.useState<
     "backlog" | "in_progress" | "completed"
   >("backlog");
+  // Priority is an integer; lower numbers sort first within a column. We keep
+  // it as a string in local state so the user can clear/retype the field
+  // without React fighting them, then parse on save (Feature #45).
+  const [priorityInput, setPriorityInput] = React.useState<string>("");
   const [deps, setDeps] = React.useState<number[]>([]);
   const [initialDeps, setInitialDeps] = React.useState<number[]>([]);
   const [loading, setLoading] = React.useState(false);
@@ -173,6 +177,7 @@ export function FeatureDetailDialog({
         setDescription(fData.feature.description ?? "");
         setAcceptanceCriteria(fData.feature.acceptanceCriteria ?? "");
         setStatus(fData.feature.status);
+        setPriorityInput(String(fData.feature.priority ?? 0));
         const depIds = dData.dependencies.map((d) => d.id);
         setDeps(depIds);
         setInitialDeps(depIds);
@@ -249,6 +254,18 @@ export function FeatureDetailDialog({
     if (description.length > DESC_MAX) {
       return `Description must be ${DESC_MAX} characters or fewer`;
     }
+    // Feature #45: priority must parse to a finite integer. Empty / NaN /
+    // floats / negatives are rejected so the backend never receives garbage.
+    const trimmedPriority = priorityInput.trim();
+    if (trimmedPriority.length === 0) return "Priority is required";
+    const parsedPriority = Number(trimmedPriority);
+    if (
+      !Number.isFinite(parsedPriority) ||
+      !Number.isInteger(parsedPriority) ||
+      parsedPriority < 0
+    ) {
+      return "Priority must be a non-negative integer";
+    }
     return null;
   }
 
@@ -306,6 +323,15 @@ export function FeatureDetailDialog({
         acceptanceCriteria.length === 0 ? null : acceptanceCriteria;
     }
     if (status !== feature.status) patch.status = status;
+    // Feature #45: only send priority if it actually changed so we don't
+    // bump updatedAt unnecessarily and so we play nice with optimistic locks.
+    const nextPriority = Number.parseInt(priorityInput.trim(), 10);
+    if (
+      Number.isFinite(nextPriority) &&
+      nextPriority !== feature.priority
+    ) {
+      patch.priority = nextPriority;
+    }
 
     try {
       if (Object.keys(patch).length > 0) {
@@ -481,6 +507,38 @@ export function FeatureDetailDialog({
                     <option value="in_progress">In Progress</option>
                     <option value="completed">Completed</option>
                   </select>
+                </div>
+
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="feature-detail-priority"
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Priority
+                  </label>
+                  <Input
+                    id="feature-detail-priority"
+                    data-testid="feature-detail-priority-input"
+                    type="number"
+                    inputMode="numeric"
+                    min={0}
+                    step={1}
+                    value={priorityInput}
+                    onChange={(e) => {
+                      setPriorityInput(e.target.value);
+                      if (fieldError) setFieldError(null);
+                      if (error) setError(null);
+                    }}
+                    disabled={saving}
+                    aria-describedby="feature-detail-priority-help"
+                  />
+                  <p
+                    id="feature-detail-priority-help"
+                    className="text-xs text-muted-foreground"
+                  >
+                    Lower numbers sort first within a column. Use 0 to pin a
+                    feature to the top.
+                  </p>
                 </div>
 
                 <div
