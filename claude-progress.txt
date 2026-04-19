@@ -146,3 +146,44 @@ Mock-data scan (STEP 5.6) of components/ui: clean (no hits).
 
 7/86 features passing after this session. Next agent can pick up the
 next highest-priority feature in the style/UI category.
+
+## Session 4 (2026-04-19) - Feature #8
+
+### Completed: Feature #8 Main content area renders beside sidebar
+
+No code changes required - the app-shell layout built in earlier sessions
+already satisfies this feature. Verified the existing implementation in
+components/app-shell/app-shell.tsx:
+  - Parent wrapper uses `flex min-h-screen w-full`.
+  - <Sidebar /> is `md:static md:translate-x-0 w-72` at >=md widths.
+  - <main data-testid="main-content" role="main"> is `flex-1` and fills
+    the remaining viewport width beside the sidebar.
+
+Verification performed (all 5 spec steps):
+  1. ✅ Navigated to http://localhost:3000/ via playwright-cli (HTTP 200,
+     title "LocalForge").
+  2. ✅ Located <main> region in snapshot (ref=e33) - rendered as a sibling
+     of <nav> inside the flex row parent.
+  3. ✅ Main is visible and occupies the remaining viewport width. At 1280px
+     viewport: sidebar = 288px (w-72), main content area = ~992px remaining.
+     Welcome hero ("Welcome to LocalForge" + CTA) is horizontally centered
+     within that remaining space, confirming main fills the full right side.
+  4. ✅ Screenshots captured:
+     - .playwright-cli/page-2026-04-19T11-35-21-777Z.png (home /)
+     - .playwright-cli/page-2026-04-19T11-35-43-419Z.png (/settings)
+     Both show identical sidebar-left / main-right layout. The settings
+     form also fills the full main column width, further confirming flex-1
+     expansion.
+  5. ✅ No overlap or z-index issues. Sidebar (z-30 on mobile) sits in the
+     normal document flow at md+ (md:static), main is a flex sibling with
+     no positioning, so they share the same stacking context and cannot
+     overlap. Visual inspection of both screenshots shows a clean vertical
+     divider between the two regions, no element bleed.
+
+Console check: 0 errors, 0 warnings (only React DevTools info, HMR connect
+log, and the Drizzle "select projects" query log from the sidebar loader).
+
+Mock-data scan of components/app-shell: clean (no hits for globalThis,
+devStore, mockDb, mockData, fakeData, sampleData, dummyData).
+
+8/86 features passing after this session.
