@@ -1,0 +1,10 @@
+docs(progress): session 17 notes for #64 #66 #69 #74 #81 batch
+
+Document the five-feature batch covering orchestrator scheduler
+verification (priority / deps), force-stop lifecycle, feature-detail
+logs panel, and the failure-toast duration tweak. Each feature gets
+its own subsection explaining what was already in place vs what
+needed changing, which scripts under scripts/ reproduce the
+verification, and how the live walk was performed.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>

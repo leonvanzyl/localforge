@@ -1,0 +1,26 @@
+feat(kanban): drag-and-drop status + within-column reorder (#46 #47 #48)
+
+Make kanban DnD persist correctly for both cross-column status changes
+and within-column priority reordering.
+
+- Refactor handleDragEnd / handleDragOver to read state from a ref
+  mirror instead of inside setState updaters. React 19 may schedule
+  functional updaters asynchronously, which previously left closure
+  variables (newOrderInColumn, columnAfter, revertSnapshot) empty by
+  the time the PATCH logic ran.
+- New collisionStrategy prefers card-id (number) targets over column-id
+  (string) targets when both are hit by pointerWithin. Without this,
+  within-column drops resolved to the column instead of the card under
+  the pointer, so reorders silently no-oped.
+- After every drop, reassign sequential priorities 0..n-1 within the
+  destination column and PATCH each affected card so the new order
+  survives reload.
+- Snapshot pre-drop state and revert on PATCH failure.
+
+Verified end-to-end with playwright-cli: moving DRAG_CARD_1 from
+Backlog to In Progress persists status across reload (#47); moving
+DRAG_CARD_3 above DRAG_CARD_2 within Backlog persists the new order
+across reload (#48). Delete-with-confirmation flow (#46) verified in
+the prior session.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>

@@ -1,0 +1,301 @@
+diff --git a/components/kanban/kanban-board.tsx b/components/kanban/kanban-board.tsx
+index e9a1343..71b3344 100644
+--- a/components/kanban/kanban-board.tsx
++++ b/components/kanban/kanban-board.tsx
+@@ -144,6 +144,14 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
+   );
+   const [activeId, setActiveId] = React.useState<number | null>(null);
+   const [dragError, setDragError] = React.useState<string | null>(null);
++
++  // Ref mirror of `state` so synchronous drag handlers can read the current
++  // feature list without depending on React's setState updater scheduling
++  // (React 19 may defer updater functions, breaking closure-based reads).
++  const stateRef = React.useRef(state);
++  React.useEffect(() => {
++    stateRef.current = state;
++  }, [state]);
+   // Ref for the kanban grid container. Passed into <DependencyLines /> so
+   // its SVG overlay can measure each card's position relative to the board
+   // when drawing connector lines (Feature #52).
+@@ -158,27 +166,29 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
+     }),
+   );
+ 
+-  // Custom collision strategy that's robust for kanban with empty columns.
+-  // We rank candidates in this order:
+-  //   1. pointerWithin: if the pointer is over a droppable, use it
+-  //   2. rectIntersection: any droppable rect overlapping the dragged rect
+-  //   3. closestCorners: nearest droppable to the dragged corners
+-  // We also re-rank so column-id droppables (string ids) win over card-id
+-  // droppables (number ids) when the pointer is in an empty area of the
+-  // column - this lets a drag onto an empty column register correctly.
++  // Custom collision strategy that's robust for kanban with empty columns
++  // AND within-column reordering. The decision tree:
++  //   1. If pointerWithin finds any card-id (number) target, prefer that -
++  //      this lets within-column drag-to-reorder work because the over.id
++  //      identifies the card we're inserting before.
++  //   2. Otherwise, if pointerWithin found a column-id (string) target,
++  //      use that - this handles the empty-column drop case.
++  //   3. Fall back to rectIntersection / closestCorners for the rare case
++  //      the pointer is outside all droppables (e.g. fast drags).
+   const collisionStrategy = React.useCallback<CollisionDetection>((args) => {
+     const pointer = pointerWithin(args);
+-    const candidates =
+-      pointer.length > 0 ? pointer : rectIntersection(args);
+-    if (candidates.length === 0) {
+-      return closestCorners(args);
++    if (pointer.length > 0) {
++      const cardHit = pointer.find((c) => typeof c.id === "number");
++      if (cardHit) return [cardHit];
++      return pointer;
++    }
++    const intersect = rectIntersection(args);
++    if (intersect.length > 0) {
++      const cardHit = intersect.find((c) => typeof c.id === "number");
++      if (cardHit) return [cardHit];
++      return intersect;
+     }
+-    // Prefer column droppables (string ids) over card droppables (number
+-    // ids) when both are present, so dropping on a column body always
+-    // resolves to that column even if a card happens to overlap.
+-    const columnHit = candidates.find((c) => typeof c.id === "string");
+-    if (columnHit) return [columnHit];
+-    return candidates;
++    return closestCorners(args);
+   }, []);
+ 
+   const load = React.useCallback(async () => {
+@@ -236,137 +246,106 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
+   }, []);
+ 
+   // Update local state on dragOver so cards visually jump between columns
+-  // mid-drag. We do NOT persist here - that happens in dragEnd.
++  // mid-drag. We do NOT persist here - that happens in dragEnd. We compute
++  // the next state synchronously from `stateRef` (rather than via a
++  // setState updater) because React 19 may schedule updater functions to
++  // run later, which would break our visual feedback.
+   const handleDragOver = React.useCallback((event: DragOverEvent) => {
+     const { active, over } = event;
+     if (!over) return;
+-    const activeId = typeof active.id === "number" ? active.id : null;
+-    if (activeId == null) return;
+-
+-    setState((prev) => {
+-      if (prev.kind !== "ready") return prev;
+-      const cards = prev.features;
+-      const activeCard = cards.find((c) => c.id === activeId);
+-      if (!activeCard) return prev;
+-      const overColumn = resolveColumnFromOver(over.id, cards);
+-      if (!overColumn) return prev;
+-
+-      // Only mutate state when crossing columns - within-column reordering
+-      // is handled in dragEnd to avoid jitter.
+-      if (activeCard.status === overColumn) return prev;
+-
+-      const moved: FeatureCardData = { ...activeCard, status: overColumn };
+-      const without = cards.filter((c) => c.id !== activeId);
+-      // Insert at end of destination column for now; final position is
+-      // resolved in dragEnd if the drop was on a specific card.
+-      return { kind: "ready", features: [...without, moved] };
+-    });
++    const activeIdLocal = typeof active.id === "number" ? active.id : null;
++    if (activeIdLocal == null) return;
++
++    const prev = stateRef.current;
++    if (prev.kind !== "ready") return;
++    const cards = prev.features;
++    const activeCard = cards.find((c) => c.id === activeIdLocal);
++    if (!activeCard) return;
++    const overColumn = resolveColumnFromOver(over.id, cards);
++    if (!overColumn) return;
++
++    // Only mutate state when crossing columns - within-column reordering
++    // is handled in dragEnd to avoid jitter.
++    if (activeCard.status === overColumn) return;
++
++    const moved: FeatureCardData = { ...activeCard, status: overColumn };
++    const without = cards.filter((c) => c.id !== activeIdLocal);
++    // Insert at end of destination column for now; final position is
++    // resolved in dragEnd if the drop was on a specific card.
++    setState({ kind: "ready", features: [...without, moved] });
+   }, []);
+ 
+   const handleDragEnd = React.useCallback(
+     async (event: DragEndEvent) => {
+       const { active, over } = event;
+-      // eslint-disable-next-line no-console
+-      console.log("[kanban] dragEnd", {
+-        activeId: active.id,
+-        overId: over?.id,
+-        overData: over?.data?.current,
+-      });
+       setActiveId(null);
+       if (!over) return;
+-      const activeId = typeof active.id === "number" ? active.id : null;
+-      if (activeId == null) return;
+-
+-      // Snapshot the pre-drop state so we can revert if the API call fails.
+-      let revertSnapshot: FeatureCardData[] | null = null;
+-      let columnAfter: ColumnId | null = null;
+-      let newOrderInColumn: FeatureCardData[] = [];
+-
+-      setState((prev) => {
+-        if (prev.kind !== "ready") return prev;
+-        revertSnapshot = prev.features;
+-        const cards = prev.features;
+-        const activeCard = cards.find((c) => c.id === activeId);
+-        if (!activeCard) return prev;
+-
+-        const targetColumn = resolveColumnFromOver(over.id, cards);
+-        if (!targetColumn) return prev;
+-
+-        // Compose the new column ordering. Start from the current grouping
+-        // (which already reflects any cross-column move from dragOver), then
+-        // arrayMove within the destination column to honor the drop position.
+-        const grouped = groupByStatus(cards);
+-        const destCards = grouped[targetColumn].filter(
+-          (c) => c.id !== activeId,
+-        );
+-        // Make sure the active card is in the destination column.
+-        const movedCard: FeatureCardData = {
+-          ...activeCard,
+-          status: targetColumn,
+-        };
+-
+-        // Where to insert? If `over.id` is a card id, insert at that card's
+-        // index; otherwise (column id) insert at end.
+-        let insertAt = destCards.length;
+-        if (typeof over.id === "number") {
+-          const idx = destCards.findIndex((c) => c.id === over.id);
+-          if (idx >= 0) insertAt = idx;
+-        }
+-        const reordered = [
+-          ...destCards.slice(0, insertAt),
+-          movedCard,
+-          ...destCards.slice(insertAt),
+-        ];
+-
+-        // Reassign sequential priorities 0..n-1 within the destination
+-        // column so the new order persists. Use a base offset of 0 - other
+-        // columns' priorities are independent for display purposes.
+-        const repriorityed = reordered.map((card, i) => ({
+-          ...card,
+-          priority: i,
+-        }));
+-        newOrderInColumn = repriorityed;
+-        columnAfter = targetColumn;
+-
+-        // Build new full feature list: cards from other columns unchanged,
+-        // destination column replaced with our reordered set.
+-        const otherColumns = cards.filter(
+-          (c) => c.id !== activeId && c.status !== targetColumn,
+-        );
+-        return {
+-          kind: "ready",
+-          features: [...otherColumns, ...repriorityed],
+-        };
+-      });
+-
+-      // eslint-disable-next-line no-console
+-      console.log("[kanban] post-setState", {
+-        columnAfter,
+-        newOrderLen: newOrderInColumn.length,
+-        order: newOrderInColumn.map((c) => ({
+-          id: c.id,
+-          priority: c.priority,
+-          status: c.status,
+-        })),
+-      });
+-
+-      // Persist via API. We need:
+-      //   - PATCH the dragged card's status (if it changed columns)
+-      //   - PATCH each card in the destination column with its new priority
++      const activeIdLocal =
++        typeof active.id === "number" ? active.id : null;
++      if (activeIdLocal == null) return;
++
++      // We need to know the current feature list synchronously to:
++      //   (a) decide what the new ordering should be
++      //   (b) snapshot a revert state
++      //   (c) issue PATCH requests
+       //
+-      // We always re-priority the destination column so within-column
+-      // reorders (Feature #48) persist as well.
+-      if (columnAfter == null) return;
+-
++      // React 19 may schedule functional `setState` updaters asynchronously,
++      // so we cannot rely on a closure variable assigned inside an updater
++      // being populated by the time we run our PATCH logic. Instead we read
++      // the current state via a ref and compute the new ordering up-front.
++      const prev = stateRef.current;
++      if (prev.kind !== "ready") return;
++      const cards = prev.features;
++      const activeCard = cards.find((c) => c.id === activeIdLocal);
++      if (!activeCard) return;
++      const targetColumn = resolveColumnFromOver(over.id, cards);
++      if (!targetColumn) return;
++
++      // Compose the new column ordering. Start from the current grouping,
++      // remove the dragged card from its (possibly old) column, then insert
++      // it into the destination column at the correct index.
++      const grouped = groupByStatus(cards);
++      const destCards = grouped[targetColumn].filter(
++        (c) => c.id !== activeIdLocal,
++      );
++      const movedCard: FeatureCardData = {
++        ...activeCard,
++        status: targetColumn,
++      };
++      // Where to insert? If `over.id` is a card id, insert at that card's
++      // index; otherwise (column id) insert at end.
++      let insertAt = destCards.length;
++      if (typeof over.id === "number") {
++        const idx = destCards.findIndex((c) => c.id === over.id);
++        if (idx >= 0) insertAt = idx;
++      }
++      const reordered = [
++        ...destCards.slice(0, insertAt),
++        movedCard,
++        ...destCards.slice(insertAt),
++      ];
++      // Reassign sequential priorities 0..n-1 within the destination column
++      // so the dropped position sticks across reload (Features #47 + #48).
++      const newOrderInColumn = reordered.map((card, i) => ({
++        ...card,
++        priority: i,
++      }));
++
++      // Snapshot revert state and apply optimistic update.
++      const revertSnapshot = cards;
++      const otherColumns = cards.filter(
++        (c) => c.id !== activeIdLocal && c.status !== targetColumn,
++      );
++      const nextFeatures = [...otherColumns, ...newOrderInColumn];
++      setState({ kind: "ready", features: nextFeatures });
++
++      // Persist: PATCH the dragged card (status + priority) and any other
++      // cards in the destination column whose priority changed.
+       try {
+-        const movedCard = newOrderInColumn.find((c) => c.id === activeId);
+-        if (!movedCard) return;
+-
+         const patches: Promise<Response>[] = [];
+         for (const card of newOrderInColumn) {
+           const body: Record<string, unknown> = {};
+-          if (card.id === activeId) {
+-            // The dragged card may have a new status + new priority.
++          if (card.id === activeIdLocal) {
+             body.priority = card.priority;
+             body.status = card.status;
+           } else {
+@@ -393,9 +372,7 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
+           err instanceof Error ? err.message : "Failed to save changes",
+         );
+         // Revert optimistic state.
+-        if (revertSnapshot) {
+-          setState({ kind: "ready", features: revertSnapshot });
+-        }
++        setState({ kind: "ready", features: revertSnapshot });
+       }
+     },
+     [load],

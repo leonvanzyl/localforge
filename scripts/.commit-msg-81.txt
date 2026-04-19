@@ -1,0 +1,22 @@
+feat(notifications): #81 failure toast duration 10s + verification scripts
+
+- agent-notifications.tsx: bump error toast duration from 5s to 10s so the
+  user has enough time to notice the failure even if they glance away
+  briefly. closeButton and description ("feature demoted to backlog") were
+  already in place from earlier #81 work. (File also carries #82 browser
+  notifications + #83 audio cue additions from parallel work-in-progress;
+  they share the same SSE listener. Tests for the other two features
+  remain uncommitted pending their own completion.)
+- scripts/setup-failure-toast-81.js: seed a project + feature so a caller
+  can POST orchestrator action=start outcome=failure against a live
+  browser page and observe the resulting toast end-to-end.
+- scripts/wait-for-session-end.js: poll /api/projects/:id/orchestrator
+  every 2s, emit one heartbeat per poll so it works as a Monitor source,
+  exit with SESSION_ENDED when running flips to false.
+
+Verification: triggered outcome=failure on project 76; snapshot captured
+the toast live with title Failed and the feature name, description
+matching, and a close button. A screenshot ~9s later showed the toast
+auto-dismissed, consistent with the 10s duration.
+
+Co-Authored-By: Claude Opus 4.7 <noreply@anthropic.com>
