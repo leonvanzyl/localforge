@@ -138,8 +138,7 @@ export function BootstrapperPanel({
             AI Bootstrapper
           </p>
           <p className="text-xs text-muted-foreground">
-            Describe <span className="font-medium">{projectName}</span> and
-            I&apos;ll turn it into features.
+            {`Describe ${projectName} and I'll turn it into features.`}
           </p>
         </div>
       </div>
