@@ -1,22 +1,12 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
   reactStrictMode: true,
-  experimental: {
-    serverComponentsExternalPackages: ["better-sqlite3"],
-  },
-  // Keep better-sqlite3 (and friends) out of the client bundle.
-  webpack: (config, { isServer }) => {
-    if (!isServer) {
-      config.resolve.fallback = {
-        ...config.resolve.fallback,
-        "better-sqlite3": false,
-        fs: false,
-        path: false,
-        os: false,
-      };
-    }
-    return config;
-  },
+  // In Next.js 16 this key moved out of `experimental`.
+  serverExternalPackages: ["better-sqlite3"],
+  // Empty turbopack object silences the Turbopack-vs-webpack mismatch warning;
+  // better-sqlite3 is already excluded from the client bundle via
+  // `serverExternalPackages` above.
+  turbopack: {},
 };
 
 export default nextConfig;
