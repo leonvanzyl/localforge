@@ -75,6 +75,21 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     return NextResponse.json({ error: "Session not found" }, { status: 404 });
   }
 
+  // Feature #93 step 3: once a session has been closed (completed / failed /
+  // terminated) it must not accept any further messages. Reject with 409
+  // so a stale client — either the bootstrapper panel before it refreshes or
+  // a raw API caller — gets a clear "conversation is over" signal instead
+  // of silently piling onto a finished transcript.
+  if (session.status !== "in_progress") {
+    return NextResponse.json(
+      {
+        error:
+          "This session is closed. Start a new conversation to keep chatting.",
+      },
+      { status: 409 },
+    );
+  }
+
   let body: unknown;
   try {
     body = await req.json();

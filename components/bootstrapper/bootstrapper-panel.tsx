@@ -2,9 +2,17 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Send, Sparkles, Loader2, Wand2 } from "lucide-react";
+import { Send, Sparkles, Loader2, Wand2, CheckCircle2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
+import {
+  Dialog,
+  DialogBody,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogDescription,
+} from "@/components/ui/dialog";
 
 /**
  * Chat panel rendered on a project page when an active bootstrapper session
@@ -15,6 +23,8 @@ import { Button } from "@/components/ui/button";
  *   - post the user's message and render it instantly (Feature #57)
  *   - stream the assistant's reply via SSE from LM Studio (Feature #58)
  *   - kick off feature generation at the end of the conversation (Feature #59)
+ *   - let the user end a conversation without generating features, marking
+ *     the session as "completed" (Feature #60)
  *
  * Messages are fetched once on mount; new messages come in via the POST
  * response's SSE stream rather than re-polling.
@@ -45,6 +55,9 @@ export function BootstrapperPanel({
   const [generating, setGenerating] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [genResult, setGenResult] = React.useState<string | null>(null);
+  const [endConfirmOpen, setEndConfirmOpen] = React.useState(false);
+  const [ending, setEnding] = React.useState(false);
+  const [ended, setEnded] = React.useState(false);
   const transcriptRef = React.useRef<HTMLDivElement>(null);
 
   // Load any prior chat history for this session.
@@ -222,8 +235,48 @@ export function BootstrapperPanel({
     }
   }
 
+  /**
+   * Close the bootstrapper session via POST /api/agent-sessions/:id/close.
+   * Sets the panel into a read-only "Session complete" state and refreshes
+   * the page so the server-rendered shell will re-evaluate whether an active
+   * bootstrapper session still exists — the next render shows the kanban
+   * board with a "Start new conversation" affordance (Feature #61).
+   */
+  async function handleEndConversation() {
+    if (ending || ended) return;
+    setEnding(true);
+    setError(null);
+    try {
+      const res = await fetch(`/api/agent-sessions/${sessionId}/close`, {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ status: "completed" }),
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        error?: string;
+      };
+      if (!res.ok) {
+        throw new Error(data.error || `Close failed (${res.status})`);
+      }
+      setEnded(true);
+      setEndConfirmOpen(false);
+      // Give the user a beat to see the "Session complete" banner, then
+      // refresh the project page so the kanban takes over.
+      setTimeout(() => router.refresh(), 800);
+    } catch (err) {
+      setError(
+        err instanceof Error ? err.message : "Failed to end conversation",
+      );
+    } finally {
+      setEnding(false);
+    }
+  }
+
   const hasConversation = messages.length >= 2; // at least one user + assistant exchange
-  const canGenerate = hasConversation && !submitting && !generating;
+  const canGenerate =
+    hasConversation && !submitting && !generating && !ended;
+  const canEnd = !submitting && !generating && !ending && !ended;
+  const isReadOnly = ended;
 
   return (
     <div
@@ -244,22 +297,37 @@ export function BootstrapperPanel({
             </p>
           </div>
         </div>
-        <Button
-          type="button"
-          size="sm"
-          variant="outline"
-          onClick={handleGenerate}
-          disabled={!canGenerate}
-          data-testid="bootstrapper-generate"
-          className="gap-1"
-        >
-          {generating ? (
-            <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-          ) : (
-            <Wand2 className="h-4 w-4" aria-hidden="true" />
-          )}
-          {generating ? "Generating…" : "Generate feature list"}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            onClick={() => setEndConfirmOpen(true)}
+            disabled={!canEnd}
+            data-testid="bootstrapper-end"
+            className="gap-1 text-muted-foreground hover:text-foreground"
+            aria-label="End conversation"
+          >
+            <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+            End conversation
+          </Button>
+          <Button
+            type="button"
+            size="sm"
+            variant="outline"
+            onClick={handleGenerate}
+            disabled={!canGenerate}
+            data-testid="bootstrapper-generate"
+            className="gap-1"
+          >
+            {generating ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <Wand2 className="h-4 w-4" aria-hidden="true" />
+            )}
+            {generating ? "Generating…" : "Generate feature list"}
+          </Button>
+        </div>
       </div>
 
       <div
@@ -325,6 +393,16 @@ export function BootstrapperPanel({
             {genResult}
           </p>
         )}
+        {ended && (
+          <div
+            role="status"
+            data-testid="bootstrapper-complete-banner"
+            className="flex items-center gap-2 rounded-md border border-emerald-500/40 bg-emerald-500/10 px-3 py-2 text-sm text-emerald-500"
+          >
+            <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+            <span>Session complete. No more messages can be sent.</span>
+          </div>
+        )}
         {error && (
           <p
             role="alert"
@@ -339,6 +417,7 @@ export function BootstrapperPanel({
       <form
         onSubmit={handleSend}
         data-testid="bootstrapper-form"
+        aria-disabled={isReadOnly}
         className="flex items-end gap-2 border-t border-border px-6 py-4"
       >
         <textarea
@@ -348,17 +427,24 @@ export function BootstrapperPanel({
           onKeyDown={(e) => {
             if (e.key === "Enter" && !e.shiftKey) {
               e.preventDefault();
-              (e.currentTarget.form as HTMLFormElement | null)?.requestSubmit();
+              if (!isReadOnly) {
+                (e.currentTarget.form as HTMLFormElement | null)?.requestSubmit();
+              }
             }
           }}
           rows={2}
-          disabled={submitting}
-          placeholder="e.g. A todo list app with tags, due dates, and dark mode"
+          disabled={submitting || isReadOnly}
+          readOnly={isReadOnly}
+          placeholder={
+            isReadOnly
+              ? "Session complete — start a new conversation to continue"
+              : "e.g. A todo list app with tags, due dates, and dark mode"
+          }
           className="flex-1 resize-none rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
         />
         <Button
           type="submit"
-          disabled={submitting || input.trim().length === 0}
+          disabled={submitting || isReadOnly || input.trim().length === 0}
           data-testid="bootstrapper-send"
           size="sm"
           className="gap-1"
@@ -371,6 +457,57 @@ export function BootstrapperPanel({
           Send
         </Button>
       </form>
+
+      <Dialog
+        open={endConfirmOpen}
+        onOpenChange={(o) => {
+          if (!ending) setEndConfirmOpen(o);
+        }}
+        labelledBy="bootstrapper-end-title"
+      >
+        <DialogHeader>
+          <DialogTitle id="bootstrapper-end-title">
+            End this conversation?
+          </DialogTitle>
+          <DialogDescription>
+            The session will be marked complete and no new messages can be
+            sent. You can start a fresh conversation from the project page at
+            any time.
+          </DialogDescription>
+        </DialogHeader>
+        <DialogBody>
+          <p className="text-sm text-muted-foreground">
+            This will not delete any messages and does not remove features
+            that were already generated.
+          </p>
+        </DialogBody>
+        <DialogFooter>
+          <Button
+            type="button"
+            variant="outline"
+            onClick={() => setEndConfirmOpen(false)}
+            disabled={ending}
+            data-testid="bootstrapper-end-cancel"
+          >
+            Cancel
+          </Button>
+          <Button
+            type="button"
+            variant="default"
+            onClick={handleEndConversation}
+            disabled={ending}
+            data-testid="bootstrapper-end-confirm"
+            className="gap-1"
+          >
+            {ending ? (
+              <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+            ) : (
+              <CheckCircle2 className="h-4 w-4" aria-hidden="true" />
+            )}
+            {ending ? "Ending…" : "End conversation"}
+          </Button>
+        </DialogFooter>
+      </Dialog>
     </div>
   );
 }

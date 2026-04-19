@@ -5,7 +5,10 @@ import { getActiveSessionForProject } from "@/lib/agent-sessions";
 import { KanbanBoard } from "@/components/kanban/kanban-board";
 import { ProjectHeaderActions } from "@/components/app-shell/project-header-actions";
 import { BootstrapperPanel } from "@/components/bootstrapper/bootstrapper-panel";
+import { StartConversationButton } from "@/components/bootstrapper/start-conversation-button";
 import { AgentActivityPanel } from "@/components/agent/agent-activity-panel";
+import { CompletedProjectView } from "@/components/celebration/completed-project-view";
+import { CelebrationListener } from "@/components/celebration/celebration-listener";
 
 export const dynamic = "force-dynamic";
 
@@ -73,6 +76,8 @@ export default async function ProjectPage({ params }: PageProps) {
         </div>
       </header>
 
+      <CelebrationListener projectId={project.id} />
+
       <div className="flex flex-1 flex-col overflow-hidden">
         <div className="flex flex-1 flex-col overflow-hidden">
           {bootstrapperSession ? (
@@ -81,8 +86,24 @@ export default async function ProjectPage({ params }: PageProps) {
               projectId={project.id}
               projectName={project.name}
             />
+          ) : project.status === "completed" ? (
+            <CompletedProjectView
+              projectId={project.id}
+              projectName={project.name}
+            />
           ) : (
-            <KanbanBoard projectId={project.id} />
+            <>
+              <div
+                data-testid="project-conversation-bar"
+                className="flex items-center justify-between gap-3 border-b border-border bg-muted/20 px-6 py-2"
+              >
+                <p className="text-xs text-muted-foreground">
+                  Want the AI to suggest more features?
+                </p>
+                <StartConversationButton projectId={project.id} />
+              </div>
+              <KanbanBoard projectId={project.id} />
+            </>
           )}
         </div>
         <AgentActivityPanel projectId={project.id} />
