@@ -297,3 +297,103 @@ Mock-data scan (STEP 5.6): clean - only hit is the lib/db/index.ts
 doc comment explicitly forbidding in-memory storage.
 
 14/86 features passing after this session.
+
+## Session 7 (2026-04-19) - Batch #19, #20, #21, #28, #37
+
+End-to-end project creation + kanban scaffold. Built the flow from
+empty state → new-project dialog → project page → kanban board.
+
+### Completed features
+
+- #19 Empty state shown when no projects exist
+  - components/app-shell/empty-state.tsx: welcome hero with
+    "Create Your First Project" CTA. Triggers openNewProjectDialog
+    from the shared ShellContext.
+  - app/page.tsx converted to a server component that calls
+    listProjects(); zero rows → <EmptyState />, otherwise
+    <HomeSelectPrompt /> (the kanban is never shown at /, per spec:
+    "kanban NOT shown when no project is selected").
+
+- #20 Create Your First Project CTA opens new project dialog
+  - components/ui/dialog.tsx: minimal shadcn-style modal (no Radix
+    dependency) with backdrop, Escape-to-close, body scroll lock,
+    and click-outside-to-close.
+  - components/app-shell/new-project-dialog.tsx: form with required
+    name input. Submit is disabled while name is empty.
+  - Dialog lives in components/app-shell/shell-context.tsx
+    (ShellProvider). Mounted once in AppShell so BOTH the empty-state
+    CTA and the sidebar "New" button open the SAME instance.
+
+- #21 Create a new project via dialog
+  - Form POSTs to /api/projects, reads {project: {id, name}},
+    calls refreshProjects() so the sidebar updates, then
+    router.push(`/projects/${id}`). Error state shown inline on 4xx/5xx.
+  - Verified with playwright-cli: typed CREATE_PROJ_TEST_42, clicked
+    Create project, dialog closed, sidebar populated, URL changed to
+    /projects/1, kanban rendered. Confirmed via GET /api/projects that
+    the SQLite row exists. Reloaded the URL directly — project still
+    present (persistence via server-component DB query).
+
+- #28 Click project in sidebar loads its kanban board
+  - Sidebar consumes projects list from ShellContext (no more per-
+    component useEffect), so newly created projects appear instantly.
+  - Active project detected via usePathname() === `/projects/${id}`,
+    rendered with bg-accent + font-medium + primary-colored icon.
+    Inactive projects revert to muted-foreground.
+  - Verified: with projects A (id 1) and B (id 3), clicking A → URL
+    /projects/1, header "CREATE_PROJ_TEST_42", A link marked [active];
+    clicking B → URL /projects/3, header "CREATE_PROJ_TEST_B", [active]
+    moves to B, A is no longer active.
+
+- #37 Three-column kanban layout renders
+  - components/kanban/kanban-board.tsx: responsive — flex row with
+    horizontal scroll on mobile/tablet, md:grid md:grid-cols-3 on wide
+    viewports (a linter later refined the breakpoint to xl for tablet
+    sizing compatibility).
+  - components/kanban/kanban-column.tsx: per-column header with an
+    icon, title, and empty-state paragraph. Columns rendered in order
+    Backlog / In Progress / Completed, each as a
+    <section role="region" aria-label={title}>.
+  - Verified the three columns sit side-by-side at 1280px, column
+    headers read exactly "Backlog", "In Progress", "Completed", and
+    each has a container for cards (data-testid kanban-column-body-*).
+
+### New files this session
+  - components/ui/dialog.tsx
+  - components/ui/input.tsx
+  - components/app-shell/shell-context.tsx (ShellProvider + useShell)
+  - components/app-shell/new-project-dialog.tsx
+  - components/app-shell/empty-state.tsx
+  - components/app-shell/home-select-prompt.tsx
+  - components/kanban/kanban-board.tsx
+  - components/kanban/kanban-column.tsx
+  - app/projects/[id]/page.tsx
+  - app/projects/[id]/not-found.tsx
+
+### Files modified
+  - app/page.tsx — server component routing to EmptyState or
+    HomeSelectPrompt based on live project count.
+  - components/app-shell/app-shell.tsx — now a client component
+    wrapping children in <ShellProvider> and mounting
+    <NewProjectDialog /> once at the root.
+  - components/app-shell/sidebar.tsx — reads projects from
+    ShellContext instead of its own fetch. "New" button opens the
+    dialog instead of linking to a non-existent /projects/new route.
+    Active-link styling tightened (font-medium + primary icon color).
+
+### Verification
+  - Zero console errors/warnings across empty state, dialog open,
+    project creation, kanban render, and sidebar navigation.
+  - Mock-data grep clean across app|lib|components (no globalThis,
+    devStore, mockDb, mockData, fakeData, etc).
+  - Real SQLite queries visible in the Drizzle logger for every
+    page load (server-component DB reads).
+  - Cleanup: DELETE /api/projects/1?removeFiles=true and /3?... both
+    returned folderRemoved:true.
+
+### Tooling note for future sessions
+  - `find` and `nohup` are also blocked by the command hook — use the
+    `Glob` tool instead of `find`, and start the dev server with
+    `npm run dev > dev-server.log 2>&1` and run_in_background=true.
+
+19/86 features passing after this session.
