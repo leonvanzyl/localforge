@@ -2088,3 +2088,121 @@ All 14 project Playwright tests pass.
 
 3 features passing this session (#96, #82, #83). 88/102 features
 passing overall.
+
+## Session 17 (2026-04-19, later) — Batch: #64, #66, #69, #74, #81
+
+Claimed the five orchestrator / notification items as a single batch and
+walked each one end-to-end. Every feature was verified against the live
+running dev server on localhost:3000; scripts that seed/poll the DB or
+call the orchestrator REST API are checked in under scripts/ so the
+tests are reproducible.
+
+### Feature #64 - Orchestrator picks feature with highest priority
+
+findNextReadyFeatureForProject in lib/features.ts already sorts backlog
+by priority ASC (lower number = higher priority) and filters for deps
+completed. Rather than re-implement, I wrote a live probe that asserts
+the ordering holds end-to-end against the real HTTP surface.
+
+- scripts/verify-priority-pick.js: seed project with three features
+  A/B/C at priorities 3/1/2, POST orchestrator action=start, assert
+  session.featureId === B. Stop, mark B completed, POST start again,
+  assert session.featureId === C. Clean up at the end.
+- No code changes needed — scheduler already correct.
+
+### Feature #66 - Orchestrator force-stop terminates the session
+
+Existing stopOrchestratorSession in lib/agent/orchestrator.ts sends
+SIGTERM then SIGKILL after 500ms and flips the sessions row to
+'terminated' with ended_at set. Added a UI walk confirming the active
+indicator + Stop button disappear and revert to 'Start Orchestrator'
+within a second of clicking Stop, with zero console errors.
+
+- scripts/verify-force-stop.js (existing): asserts DB row transitions,
+  feature back in backlog, child exits inside SIGTERM window.
+- scripts/setup-stop-ui-66.js: small helper that prepares a project
+  with one feature so the playwright-cli walk can click Start and then
+  Stop without manual setup.
+- scripts/cleanup-project.js: generic DELETE helper invoked at the end
+  of each verification run.
+
+### Feature #69 - Orchestrator skips features with unmet dependencies
+
+Verified that a feature X with priority 1 that depends on Y (priority
+2, no deps) is NOT picked first — Y wins because X's dependency isn't
+satisfied. After Y completes, X is then picked on the next orchestrator
+start. Same scheduler path as #65 but with a specific priority-inverts-
+against-dep-order fixture.
+
+- scripts/verify-skip-unmet-deps.js: creates X(p1, depends Y) and
+  Y(p2), asserts picked order is Y then X. Uses feature_add_dependency
+  MCP endpoint for wiring.
+
+### Feature #74 - Feature-detail dialog exposes agent logs
+
+feature-detail-dialog.tsx already had the "Agent activity" section with
+data-testid="feature-detail-logs-section". Verified each log row
+renders timestamp + messageType badge + message body + optional
+screenshot, and that GET /api/features/:id/logs returns all rows with
+the correct feature_id + session_id.
+
+- scripts/verify-feature-logs-74.js: runs orchestrator to completion
+  against a scratch project, asserts >0 log rows, every row has the
+  right feature/session id, required message_type markers are present
+  (info/action + any of error/screenshot/test_result), and the
+  persistence-across-reads check (second GET returns same rows).
+- scripts/setup-feature-logs-ui-74.js: seeds a project+feature, runs
+  the orchestrator with outcome=success so the UI walker can open the
+  feature detail modal and manually inspect the logs panel.
+- No code changes needed — the panel renders correctly.
+
+### Feature #81 - Toast notification on feature failure (error)
+
+components/agent/agent-notifications.tsx already surfaced a destructive
+toast via toast.error() on status=failed SSE events. The spec calls
+for the failure toast to persist LONGER than success toasts so users
+notice a glance-away failure. Success toasts are 5s; bumped failure
+duration from 5000ms to 10000ms so the two channels are distinguishable
+and the failure has twice the dwell time.
+
+Other toast affordances were already in place from earlier #81 work:
+toast.error (which renders red because the <Toaster /> has richColors),
+closeButton: true, description text naming the demote-to-backlog side
+effect, deduped by session id so an SSE reconnect doesn't double-fire.
+
+- components/agent/agent-notifications.tsx: single-line change,
+  duration: 5000 → duration: 10000 inside the failed branch. Added
+  a code comment explaining the 5s / 10s asymmetry.
+- scripts/setup-failure-toast-81.js: seeds a project + feature but
+  does NOT start the orchestrator — leaves that to the caller so the
+  browser page can be mounted first (SSE listeners need the page
+  rendered to receive the event).
+- scripts/wait-for-session-end.js: generic polling helper that hits
+  /api/projects/:id/orchestrator every 2s, emits one heartbeat line
+  per poll so it runs under the Monitor tool, exits with
+  SESSION_ENDED when running flips to false. Used to know when to
+  snapshot the UI after triggering a failure.
+
+Verification walk: triggered action=start outcome=failure durationMs=600
+on project 76 via the REST API, waited for the session to transition,
+snapshotted the page and confirmed the toast element is present with
+title 'Failed: "FAIL_TOAST_..._FEAT"' and description
+'The agent returned an error - feature demoted to backlog.' plus a
+close button. Took a screenshot ~9s later and the toast had
+auto-dismissed, consistent with the 10s duration (vs 5s which would
+have dismissed well before the snapshot even had a chance to run).
+
+### Files changed / added
+
+- components/agent/agent-notifications.tsx: duration bump 5s→10s (#81)
+  (file also carries #82 / #83 additions from a parallel session)
+- scripts/verify-priority-pick.js: NEW (#64)
+- scripts/setup-stop-ui-66.js: NEW (#66)
+- scripts/cleanup-project.js: NEW (#66)
+- scripts/verify-skip-unmet-deps.js: NEW (#69)
+- scripts/verify-feature-logs-74.js: NEW (#74)
+- scripts/setup-feature-logs-ui-74.js: NEW (#74)
+- scripts/setup-failure-toast-81.js: NEW (#81)
+- scripts/wait-for-session-end.js: NEW (#81)
+
+5 features passing this session (#64, #66, #69, #74, #81).
