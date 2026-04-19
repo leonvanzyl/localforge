@@ -4,6 +4,7 @@ import fs from "node:fs";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
 import { projects, features, settings } from "./db/schema";
+import { getProjectEffectiveSettings } from "./settings";
 
 /**
  * Project domain helpers.
@@ -101,6 +102,31 @@ function writeClaudeSettings(folderPath: string): void {
       ANTHROPIC_BASE_URL: getDefaultLmStudioUrl(),
     },
     model: getDefaultModel(),
+  };
+  fs.writeFileSync(
+    path.join(claudeDir, "settings.json"),
+    JSON.stringify(settingsContent, null, 2),
+    "utf8",
+  );
+}
+
+/**
+ * Regenerate `.claude/settings.json` for an existing project using its
+ * effective settings (project overrides take precedence over globals).
+ * Called by the project-settings API after a save so the on-disk file
+ * stays in sync with the database.
+ *
+ * Idempotent: always writes the full JSON object from scratch.
+ */
+export function writeProjectClaudeSettings(project: ProjectRecord): void {
+  const effective = getProjectEffectiveSettings(project.id);
+  const claudeDir = path.join(project.folderPath, ".claude");
+  fs.mkdirSync(claudeDir, { recursive: true });
+  const settingsContent = {
+    env: {
+      ANTHROPIC_BASE_URL: effective.lm_studio_url,
+    },
+    model: effective.model,
   };
   fs.writeFileSync(
     path.join(claudeDir, "settings.json"),

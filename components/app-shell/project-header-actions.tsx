@@ -1,10 +1,11 @@
 "use client";
 
 import * as React from "react";
-import { Trash2, Play } from "lucide-react";
+import { Cog, Play, Trash2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { DeleteProjectDialog } from "./delete-project-dialog";
+import { ProjectSettingsDialog } from "./project-settings-dialog";
 
 /**
  * Client-side action bar rendered inside the project page header
@@ -23,6 +24,7 @@ export function ProjectHeaderActions({
   projectName: string;
 }) {
   const [dialogOpen, setDialogOpen] = React.useState(false);
+  const [settingsOpen, setSettingsOpen] = React.useState(false);
   const [starting, setStarting] = React.useState(false);
   const [startError, setStartError] = React.useState<string | null>(null);
 
@@ -67,6 +69,18 @@ export function ProjectHeaderActions({
         type="button"
         variant="outline"
         size="sm"
+        onClick={() => setSettingsOpen(true)}
+        data-testid="project-settings-button"
+        aria-label={`Open settings for ${projectName}`}
+        className="gap-1.5"
+      >
+        <Cog className="h-4 w-4" aria-hidden="true" />
+        Settings
+      </Button>
+      <Button
+        type="button"
+        variant="outline"
+        size="sm"
         onClick={() => setDialogOpen(true)}
         data-testid="project-delete-button"
         aria-label={`Delete project ${projectName}`}
@@ -87,6 +101,12 @@ export function ProjectHeaderActions({
       <DeleteProjectDialog
         open={dialogOpen}
         onOpenChange={setDialogOpen}
+        projectId={projectId}
+        projectName={projectName}
+      />
+      <ProjectSettingsDialog
+        open={settingsOpen}
+        onOpenChange={setSettingsOpen}
         projectId={projectId}
         projectName={projectName}
       />
