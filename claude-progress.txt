@@ -187,3 +187,64 @@ Mock-data scan of components/app-shell: clean (no hits for globalThis,
 devStore, mockDb, mockData, fakeData, sampleData, dummyData).
 
 8/86 features passing after this session.
+
+## Session 5 (2026-04-19) - Batch #6, #15, #7, #31, #11
+
+### Completed features
+
+- #6  App loads without errors
+  - Added app/icon.svg to eliminate the /favicon.ico 404 that was the
+    only console error on /. After the icon was added the request is
+    served by Next's file-based icon convention.
+  - Verified HTTP 200 via curl and via playwright-cli, snapshot shows
+    rendered body content, 0 console errors, 0 warnings.
+
+- #15 Desktop layout renders at 1920px
+  - Sidebar is w-72 (288px), main content is flex-1, both inside a
+    flex wrapper. At 1920x1080 the sidebar stays expanded and the
+    main area fills the remaining width without horizontal scroll.
+    Verified via playwright-cli resize + screenshot.
+
+- #7  Sidebar renders on initial page load
+  - Built components/app-shell/sidebar.tsx (initial version; a linter
+    later swapped it to consume useShell() from shell-context.tsx).
+    Rendered as <aside role="navigation" data-testid="sidebar"> with
+    a brand block, project list area, and settings link at the
+    bottom. On mobile it slides in from the left via a hamburger.
+
+- #31 Global settings page accessible from sidebar
+  - New route: app/settings/page.tsx (server component loading values
+    via lib/settings.getGlobalSettings()) + app/settings/settings-form.tsx
+    (client form with LM Studio URL, Model, Working Directory inputs).
+  - New API: app/api/settings/route.ts (GET + PUT).
+  - New helper: lib/settings.ts with validation (URL must be http(s),
+    no empty values) and upsert-style writes into the existing
+    settings table (global rows use project_id = NULL).
+  - Verified: clicked sidebar settings link -> URL changed to /settings,
+    all three inputs render with defaults, Back returns to /.
+
+- #11 Dark mode applied by default
+  - app/layout.tsx renders <html lang="en" class="dark" data-theme="dark">
+    so dark mode is present in the first server-rendered HTML and there
+    is no flash of light content.
+  - Screenshot confirms near-black background (hsl 240 10% 3.9%) and
+    light text. Opened a fresh browser session (delete-data) to simulate
+    a first visit; dark mode still applied with no localStorage.
+
+### New files / changes
+  - app/icon.svg                       (new)
+  - app/settings/page.tsx              (new)
+  - app/settings/settings-form.tsx     (new)
+  - app/api/settings/route.ts          (new)
+  - lib/settings.ts                    (new)
+  - app/layout.tsx                     (added data-theme="dark", wrapped in AppShell)
+  - components/app-shell/app-shell.tsx (initial; later enhanced by another agent)
+  - components/app-shell/sidebar.tsx   (initial; later wired to shell-context)
+  - app/page.tsx                       (kept test buttons, wrapped in Links)
+
+### Verification
+  - playwright-cli console on / and /settings: 0 errors, 0 warnings.
+  - Mock-data grep clean (only lib/db/index.ts doc comment).
+  - GET /api/settings returns the persisted JSON shape.
+
+13/86 features passing after this session.
