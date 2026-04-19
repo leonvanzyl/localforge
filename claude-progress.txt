@@ -555,3 +555,88 @@ app/api/settings/: clean (no hits).
     reuse that exact Drizzle read/write path in lib/settings.ts.
 
 26/86 features passing after this session.
+
+## Session N (2026-04-19) - Feature #16 Tablet layout at 768x1024
+
+### The bug
+
+At 768x1024 (iPad portrait) the project page kanban board rendered
+with severe layout breakage:
+  - Kanban columns overlapped each other horizontally - the empty-state
+    hint text of all three columns visibly intersected.
+  - The "Completed" column extended off the right edge of the viewport.
+  - The sidebar was squashed narrower than its w-72 (288px) basis,
+    wrapping the "Local autonomous coding" tagline onto two lines.
+
+### Root cause
+
+Two compounding issues:
+
+1. kanban-board used `md:grid md:grid-cols-3` which switched to a
+   desktop 3-column grid at 768px. But with a 288px sidebar on md+,
+   main only gets ~480px; three columns with `min-w-[280px]` need
+   ~872px + gaps - so columns overlapped their grid tracks.
+2. app-shell's <main> was `flex min-h-screen w-full flex-1 flex-col`.
+   Because flex items default to `min-width: auto`, main's min-content
+   was driven by the kanban's intrinsic width (~872px), so even though
+   `overflow-hidden` wrapped the kanban, main still demanded more than
+   its 480px share and squashed the sidebar to recover space.
+
+### Fix (minimal, two files)
+
+- components/kanban/kanban-board.tsx: switched the desktop grid
+  breakpoint from `md:` to `xl:` (1280px). Below xl, the kanban uses
+  the existing `flex overflow-x-auto` horizontal-scroll pattern, which
+  is the graceful tablet adaptation. At xl+ the main area is ~992px -
+  the first breakpoint that fits 3 * 280px + gaps cleanly.
+- components/app-shell/app-shell.tsx: replaced `w-full` on <main>
+  with `min-w-0`. `min-w-0` overrides the default `min-width: auto`
+  so main can shrink to (viewport - sidebar) regardless of its
+  content's min-content width. `w-full` was redundant with `flex-1`
+  anyway.
+
+Together these two changes let the kanban horizontal-scroll sit
+happily inside a 480px main, while the sidebar keeps its 288px width.
+
+### Verification (playwright-cli, viewport 768x1024)
+
+- / (empty/select-project): sidebar full-width, hero content centered,
+  no overlap, no horizontal page scroll, 0 console errors.
+- /projects/:id (kanban): Backlog fully visible; In Progress partial;
+  Completed scrollable into view by hover/scroll. `playwright-cli
+  hover kanban-column-completed` auto-scrolls the kanban horizontally
+  and the Completed column shows cleanly with no overlap. 0 console
+  errors.
+- /settings: form renders inside 480px main, all inputs reachable,
+  Save settings button visible. 0 console errors.
+- Interactive elements at 768px: sidebar "New" button opens the
+  new-project dialog (centered, all fields reachable). Theme toggle,
+  sidebar project list links, Settings link all clickable.
+- End key did not horizontally scroll the viewport - confirmed no
+  page-level overflow, horizontal scroll is confined to the kanban
+  container as intended.
+
+Screenshots (all 768x1024):
+  .playwright-cli/page-2026-04-19T11-38-37-522Z.png (project kanban)
+  .playwright-cli/page-2026-04-19T11-38-51-578Z.png (home select-project)
+  .playwright-cli/page-2026-04-19T11-39-53-813Z.png (settings)
+  .playwright-cli/page-2026-04-19T11-39-42-536Z.png (kanban scrolled to Completed)
+
+### Mock-data scan (STEP 5.6)
+
+grep across app|lib|components for globalThis | devStore | dev-store |
+mockDb | mockData | fakeData | sampleData | dummyData | TODO.*real |
+TODO.*database | STUB | MOCK | isDevelopment: only hit is the doc
+comment in lib/db/index.ts:17 ("never in-memory or globalThis-based
+storage") - clean.
+
+### Coordination note for future sessions
+
+A parallel theme agent was concurrently modifying
+components/app-shell/sidebar.tsx (ThemeToggle import + render in the
+footer) during this session. I initially added `shrink-0` on the
+sidebar too, but re-verified that `min-w-0` on <main> alone is
+sufficient to fix the squeeze. So this commit does NOT touch
+sidebar.tsx - the theme agent can commit their sidebar work cleanly.
+
+27/86 features passing after this session.
