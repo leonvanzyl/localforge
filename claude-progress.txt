@@ -1779,3 +1779,101 @@ All read-only, none modify state. Added so future agents can answer
 node -e scripts (which the sandbox's cmd allowlist blocks).
 
 5 features passing this session (#60, #61, #65, #75, #44). 64/102 features passing overall.
+
+## Session 15 (2026-04-19)
+
+Batch assignment: #70, #84, #85, #86, #45. Went in order.
+
+### Feature #70 - Orchestrator continues to next feature after completion
+
+Added an auto-continue branch to `finalizeSession` in
+`lib/agent/orchestrator.ts`. When a coding run ends with `outcome:
+"success"`, we now wait one `setImmediate` tick to let the running-map
+slot drain, then call `startOrchestrator(projectId, options)` again
+with the same StartOptions the caller supplied. This lets a single
+Start click run through the entire backlog without the user clicking
+Start N times; preserving the StartOptions means test scenarios that
+pass `{ outcome, durationMs }` chain deterministically across features.
+
+Failures still short-circuit — matching the Feature #68 contract where
+a failed test demotes the feature and stops the run so the user can
+investigate.
+
+Verified via scripts/verify-auto-continue.js: seed 3 features, Start
+once with `{outcome:"success", durationMs:600}`, assert all three flip
+to completed without another Start, and assert three distinct rows in
+`agent_sessions` (one per feature).
+
+### Feature #84 - All-features-done detection triggers completion state
+
+`markProjectCompletedIfAllDone(projectId)` in `lib/projects.ts` flips
+`projects.status` from "active" to "completed" the moment every feature
+in the project has `passes = 1`. It runs at the end of each successful
+orchestrator finalize and emits a `project_completed` event on the
+agent-events bus, which `components/celebration/celebration-listener.tsx`
+subscribes to via SSE and triggers a `router.refresh()`. End result:
+the project-detail page swaps from the kanban view to the celebration
+view automatically, with no manual reload.
+
+### Feature #85 - Celebration screen with confetti animation
+
+`components/celebration/celebration-screen.tsx` fires three
+canvas-confetti bursts staggered at 0/250/500ms on mount, unless the
+user's OS declares `prefers-reduced-motion`, in which case the bursts
+are skipped and the trophy icon pulses instead. The three-burst
+pattern gives the spray a more natural "cascade" feel than a single
+firing.
+
+### Feature #86 - Project completion summary modal
+
+Same component as #85 also reads `GET /api/projects/:id/completion`
+(new route at `app/api/projects/[id]/completion/route.ts`) which
+returns `{status, featureCount, passedCount, testsPassedCount,
+durationMs, startedAt, completedAt}`. Renders a stats grid:
+
+  Features shipped:  N / N
+  Tests passed:      N
+  Total time:        Mm Ss
+  Completed:         DD Mon YYYY, HH:mm
+
+Plus a "View kanban" dismiss button that toggles the
+`components/celebration/completed-project-view.tsx` wrapper back to
+the regular kanban — and a "Show celebration" banner in the wrapper
+so the user can re-open the splash after dismissing.
+
+Verified end-to-end against project 43 (CELEBRATION_UI_TEST): seeded
+3 features, Started once, all three auto-completed in ~50s, splash
+appeared with correct stats (3/3, 3, 2m 25s, completion timestamp),
+toggle back-and-forth worked, toasts fired per feature, then the
+test project was cleaned up.
+
+### Feature #45 - Edit feature priority (numeric)
+
+Extended `components/kanban/feature-detail-dialog.tsx` with a numeric
+Priority `<input type="number">` field between the Status select and
+the Dependencies section. Local state holds the value as a string so
+the user can clear/retype freely, with client-side validation that
+rejects empty/NaN/non-integer/negative values. Save only PATCHes
+`priority` when the value actually changed so updatedAt isn't bumped
+unnecessarily.
+
+Covered by `tests/priority-edit.spec.js` (2 tests):
+  - Seed 3 backlog features with priorities 1/2/3, open the middle
+    card's dialog, change priority to 0, assert the kanban reorders
+    with it pinned to the top, reload, confirm SQLite persistence.
+  - Seed one feature, open dialog, clear priority input, click Save,
+    assert the field-error message appears and the DB row is unchanged.
+
+Both pass in 3.8s under the existing playwright config. The full
+suite (6 tests) stays green.
+
+### Commits this session
+
+  834a204 feat(celebration): project-complete splash + stats API (#101)
+          (#70 auto-continue, #84 completion detection, #85 confetti,
+          #86 stats modal — earlier in this session, before compaction)
+  6d075c1 feat(kanban): edit feature priority in detail dialog (#45)
+
+5 features passing this session (#70, #84, #85, #86, #45). 69/102
+features passing overall.
+
