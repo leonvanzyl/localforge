@@ -54,6 +54,18 @@ export function AddFeatureDialog({
   const [fieldError, setFieldError] = React.useState<string | null>(null);
   const [titleTouched, setTitleTouched] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
+  /**
+   * Feature #54: rapid double-click duplicate protection.
+   *
+   * `setSubmitting(true)` is asynchronous — React batches the state update,
+   * so a second click fired within the same tick (e.g. 50ms double-click,
+   * synthetic test events, touch bounces) can slip past the `submitting`
+   * check and trigger a second fetch. This ref flips synchronously at the
+   * very top of `handleSubmit`, so the second call returns immediately
+   * before any network request goes out. The `submitting` state is still
+   * used to drive the UI (spinner, disabled attribute, dialog close-guard).
+   */
+  const submittingRef = React.useRef(false);
 
   // Reset state when dialog opens.
   React.useEffect(() => {
@@ -66,6 +78,7 @@ export function AddFeatureDialog({
       setFieldError(null);
       setTitleTouched(false);
       setSubmitting(false);
+      submittingRef.current = false;
       queueMicrotask(() => inputRef.current?.focus());
     }
   }, [open]);
@@ -86,12 +99,19 @@ export function AddFeatureDialog({
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    // Synchronous idempotency guard (Feature #54). Must run BEFORE validate()
+    // so that a second click doesn't even run validation again (which is
+    // harmless but wastes work). React state updates are async, so this ref
+    // is the only reliable way to block a double-submit in the same tick.
+    if (submittingRef.current) return;
+
     const validationError = validate();
     if (validationError) {
       setFieldError(validationError);
       return;
     }
 
+    submittingRef.current = true;
     setSubmitting(true);
     setError(null);
     setFieldError(null);
@@ -126,6 +146,9 @@ export function AddFeatureDialog({
       if (onCreated) onCreated();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create feature");
+      // On failure, release the ref so the user can retry. On success the
+      // dialog closes and the open-effect resets the ref on the next open.
+      submittingRef.current = false;
     } finally {
       setSubmitting(false);
     }

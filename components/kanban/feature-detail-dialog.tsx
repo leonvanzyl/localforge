@@ -2,6 +2,9 @@
 
 import * as React from "react";
 import {
+  ChevronLeft,
+  ChevronRight,
+  Images,
   Loader2,
   Link2,
   TerminalSquare,
@@ -50,6 +53,19 @@ function logBadgeClass(mt: AgentLogEntry["messageType"]) {
     default:
       return "border border-border bg-muted text-muted-foreground";
   }
+}
+
+/**
+ * Turn a stored `screenshotPath` log value into the URL our `/api/screenshots`
+ * route serves. The runner emits paths like `screenshots/feature-48-foo.png`
+ * (relative to the harness repo root) so we strip the leading `screenshots/`
+ * before joining — otherwise we'd hit `/api/screenshots/screenshots/...` and
+ * the route handler would look for the file at `<repo>/screenshots/screenshots/*`.
+ */
+function resolveScreenshotUrl(raw: string): string {
+  const trimmed = raw.replace(/^\/+/, "");
+  const stripped = trimmed.replace(/^screenshots\//, "");
+  return `/api/screenshots/${stripped}`;
 }
 
 function formatLogTime(iso: string): string {
@@ -128,6 +144,18 @@ export function FeatureDetailDialog({
   const [logsError, setLogsError] = React.useState<string | null>(null);
 
   /**
+   * Feature #79: screenshot-gallery lightbox.
+   *
+   * We derive the gallery's image list from the same `logs` state (any row
+   * with messageType=="screenshot" AND a non-null `screenshotPath`), so the
+   * gallery reflects whatever the agent has captured so far without a
+   * separate fetch. The lightbox is driven by an index into that derived
+   * list (`null` means the lightbox is closed). Using an index — not the log
+   * id — lets us compute prev/next in O(1) and keeps keyboard nav trivial.
+   */
+  const [lightboxIndex, setLightboxIndex] = React.useState<number | null>(null);
+
+  /**
    * Delete confirmation state (Feature #46).
    *
    * The first click of the "Delete feature" button toggles
@@ -155,6 +183,9 @@ export function FeatureDetailDialog({
     setConfirmingDelete(false);
     setDeleteError(null);
     setDeleting(false);
+    // Feature #79: reset the gallery lightbox so reopening the dialog always
+    // starts with the lightbox closed (users expect a fresh view).
+    setLightboxIndex(null);
 
     async function load(id: number) {
       try {
@@ -233,6 +264,78 @@ export function FeatureDetailDialog({
       .map((id) => allFeatures.find((f) => f.id === id))
       .filter((f): f is DetailFeature => Boolean(f));
   }, [deps, allFeatures]);
+
+  /**
+   * Feature #79: derive the ordered screenshot list from the log stream.
+   * We keep the log order (chronological) and deduplicate on `screenshotPath`
+   * so that if the agent re-emits the same screenshot we don't render the
+   * same thumbnail twice in the grid.
+   */
+  const screenshots = React.useMemo(() => {
+    const seen = new Set<string>();
+    const out: { logId: number; path: string; url: string; createdAt: string }[] =
+      [];
+    for (const log of logs) {
+      if (log.messageType !== "screenshot") continue;
+      if (!log.screenshotPath) continue;
+      if (seen.has(log.screenshotPath)) continue;
+      seen.add(log.screenshotPath);
+      out.push({
+        logId: log.id,
+        path: log.screenshotPath,
+        url: resolveScreenshotUrl(log.screenshotPath),
+        createdAt: log.createdAt,
+      });
+    }
+    return out;
+  }, [logs]);
+
+  const activeScreenshot =
+    lightboxIndex != null && lightboxIndex >= 0 && lightboxIndex < screenshots.length
+      ? screenshots[lightboxIndex]
+      : null;
+
+  const showPrev = React.useCallback(() => {
+    setLightboxIndex((cur) => {
+      if (cur == null || screenshots.length === 0) return cur;
+      return (cur - 1 + screenshots.length) % screenshots.length;
+    });
+  }, [screenshots.length]);
+
+  const showNext = React.useCallback(() => {
+    setLightboxIndex((cur) => {
+      if (cur == null || screenshots.length === 0) return cur;
+      return (cur + 1) % screenshots.length;
+    });
+  }, [screenshots.length]);
+
+  const closeLightbox = React.useCallback(() => {
+    setLightboxIndex(null);
+  }, []);
+
+  // Feature #79: keyboard navigation inside the lightbox.
+  //   Esc        — close
+  //   ←          — previous screenshot
+  //   →          — next screenshot
+  // Only bind the listener when the lightbox is actually open so keystrokes
+  // in the rest of the form (e.g. typing in textareas) are unaffected.
+  React.useEffect(() => {
+    if (lightboxIndex == null) return;
+    function onKey(e: KeyboardEvent) {
+      if (e.key === "Escape") {
+        e.preventDefault();
+        closeLightbox();
+      } else if (e.key === "ArrowLeft") {
+        e.preventDefault();
+        showPrev();
+      } else if (e.key === "ArrowRight") {
+        e.preventDefault();
+        showNext();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [lightboxIndex, closeLightbox, showPrev, showNext]);
 
   function addDep(raw: string) {
     const n = Number.parseInt(raw, 10);
@@ -619,6 +722,70 @@ export function FeatureDetailDialog({
                   )}
                 </div>
 
+                {/* Feature #79: screenshot gallery. Renders a thumbnail grid
+                    of every screenshot captured during agent runs. Clicking a
+                    thumbnail opens a lightbox with prev/next navigation and
+                    Esc-to-close keyboard support. When there are no
+                    screenshots yet we still render the section header with a
+                    muted empty state so users know where the gallery will
+                    appear once tests run. */}
+                <div
+                  className="space-y-2"
+                  data-testid="feature-detail-screenshots-section"
+                >
+                  <label className="flex items-center gap-1 text-sm font-medium text-foreground">
+                    <Images className="h-3.5 w-3.5" aria-hidden="true" />
+                    Screenshots
+                    {screenshots.length > 0 && (
+                      <span
+                        data-testid="feature-detail-screenshots-count"
+                        className="ml-1 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground"
+                      >
+                        {screenshots.length}
+                      </span>
+                    )}
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Verification screenshots captured by Playwright during
+                    agent runs. Click any thumbnail to view it full-size.
+                  </p>
+
+                  {screenshots.length === 0 ? (
+                    <p
+                      data-testid="feature-detail-screenshots-empty"
+                      className="text-xs text-muted-foreground"
+                    >
+                      {logsLoading
+                        ? "Loading screenshots…"
+                        : "No screenshots captured yet."}
+                    </p>
+                  ) : (
+                    <ul
+                      data-testid="feature-detail-screenshots-grid"
+                      className="grid grid-cols-2 gap-2 sm:grid-cols-3 md:grid-cols-4"
+                    >
+                      {screenshots.map((shot, idx) => (
+                        <li key={shot.logId}>
+                          <button
+                            type="button"
+                            data-testid={`feature-detail-screenshot-thumb-${shot.logId}`}
+                            data-screenshot-index={idx}
+                            onClick={() => setLightboxIndex(idx)}
+                            className="group block w-full overflow-hidden rounded-md border border-border bg-background/40 transition-colors hover:border-fuchsia-500/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                          >
+                            <img
+                              src={shot.url}
+                              alt={`Screenshot ${idx + 1} of ${screenshots.length}`}
+                              className="block h-24 w-full object-cover"
+                              loading="lazy"
+                            />
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  )}
+                </div>
+
                 <div
                   className="space-y-2"
                   data-testid="feature-detail-logs-section"
@@ -667,7 +834,7 @@ export function FeatureDetailDialog({
                   {!logsLoading && !logsError && logs.length > 0 && (
                     <div
                       data-testid="feature-detail-logs-list"
-                      className="max-h-64 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed"
+                      className="max-h-80 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed"
                     >
                       <ul className="space-y-1">
                         {logs.map((log) => (
@@ -675,21 +842,45 @@ export function FeatureDetailDialog({
                             key={log.id}
                             data-testid={`feature-detail-log-${log.id}`}
                             data-message-type={log.messageType}
-                            className="flex items-start gap-2"
+                            className="flex flex-col gap-1"
                           >
-                            <span className="shrink-0 text-muted-foreground">
-                              {formatLogTime(log.createdAt)}
-                            </span>
-                            <span
-                              className={`shrink-0 rounded px-1.5 py-0 text-[10px] uppercase ${logBadgeClass(
-                                log.messageType,
-                              )}`}
-                            >
-                              {log.messageType}
-                            </span>
-                            <span className="break-words text-foreground">
-                              {log.message}
-                            </span>
+                            <div className="flex items-start gap-2">
+                              <span className="shrink-0 text-muted-foreground">
+                                {formatLogTime(log.createdAt)}
+                              </span>
+                              <span
+                                className={`shrink-0 rounded px-1.5 py-0 text-[10px] uppercase ${logBadgeClass(
+                                  log.messageType,
+                                )}`}
+                              >
+                                {log.messageType}
+                              </span>
+                              <span className="break-words text-foreground">
+                                {log.message}
+                              </span>
+                            </div>
+                            {log.screenshotPath && (
+                              /* Feature #96/#79: inline thumbnail of the
+                                 screenshot captured by the Playwright run.
+                                 Uses the same resolver as the gallery so the
+                                 two views share one code path for stripping
+                                 the leading `screenshots/` segment before
+                                 hitting the /api/screenshots route. */
+                              <a
+                                href={resolveScreenshotUrl(log.screenshotPath)}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                data-testid={`feature-detail-log-screenshot-${log.id}`}
+                                className="ml-16 block w-fit overflow-hidden rounded border border-border bg-background/40 p-1 hover:border-fuchsia-500/60"
+                              >
+                                <img
+                                  src={resolveScreenshotUrl(log.screenshotPath)}
+                                  alt={`Screenshot for log ${log.id}`}
+                                  className="max-h-48 w-auto max-w-full"
+                                  loading="lazy"
+                                />
+                              </a>
+                            )}
                           </li>
                         ))}
                       </ul>
@@ -823,6 +1014,79 @@ export function FeatureDetailDialog({
           )}
         </form>
       </div>
+      {/* Feature #79: screenshot-gallery lightbox. Rendered OUTSIDE the
+          scrollable `max-h-[85vh]` container so it floats over the dialog at
+          the viewport level. Clicking the backdrop closes; clicking the
+          image itself does not (so users can zoom/copy without dismissing).
+          The prev/next buttons wrap, matching the keyboard behaviour. */}
+      {activeScreenshot && lightboxIndex != null && (
+        <div
+          data-testid="feature-detail-lightbox"
+          role="dialog"
+          aria-modal="true"
+          aria-label={`Screenshot ${lightboxIndex + 1} of ${screenshots.length}`}
+          className="fixed inset-0 z-[60] flex items-center justify-center bg-black/80 p-4"
+          onClick={closeLightbox}
+        >
+          <button
+            type="button"
+            data-testid="feature-detail-lightbox-close"
+            aria-label="Close screenshot viewer"
+            onClick={(e) => {
+              e.stopPropagation();
+              closeLightbox();
+            }}
+            className="absolute right-4 top-4 rounded-full bg-black/60 p-2 text-white/90 transition-colors hover:bg-black/80 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          >
+            <XIcon className="h-5 w-5" aria-hidden="true" />
+          </button>
+          {screenshots.length > 1 && (
+            <>
+              <button
+                type="button"
+                data-testid="feature-detail-lightbox-prev"
+                aria-label="Previous screenshot"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  showPrev();
+                }}
+                className="absolute left-4 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white/90 transition-colors hover:bg-black/80 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronLeft className="h-6 w-6" aria-hidden="true" />
+              </button>
+              <button
+                type="button"
+                data-testid="feature-detail-lightbox-next"
+                aria-label="Next screenshot"
+                onClick={(e) => {
+                  e.stopPropagation();
+                  showNext();
+                }}
+                className="absolute right-4 top-1/2 -translate-y-1/2 rounded-full bg-black/60 p-2 text-white/90 transition-colors hover:bg-black/80 hover:text-white focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+              >
+                <ChevronRight className="h-6 w-6" aria-hidden="true" />
+              </button>
+            </>
+          )}
+          <div
+            className="flex max-h-full max-w-full flex-col items-center gap-2"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <img
+              src={activeScreenshot.url}
+              alt={`Screenshot ${lightboxIndex + 1} of ${screenshots.length}`}
+              data-testid="feature-detail-lightbox-image"
+              className="max-h-[85vh] max-w-full rounded-md border border-border object-contain"
+            />
+            <p
+              data-testid="feature-detail-lightbox-caption"
+              className="rounded-md bg-black/60 px-2 py-0.5 text-xs text-white/80"
+            >
+              {lightboxIndex + 1} / {screenshots.length} — {activeScreenshot.path}
+            </p>
+          </div>
+        </div>
+      )}
     </Dialog>
   );
 }

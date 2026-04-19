@@ -95,14 +95,61 @@ function badgeClass(
   }
 }
 
+/**
+ * localStorage key used to persist the collapsed/expanded state of the agent
+ * activity panel across reloads (Feature #72). Stored value is "0" (collapsed)
+ * or "1" (expanded); missing/invalid values default to expanded.
+ */
+const ACTIVITY_PANEL_OPEN_KEY = "localforge.agentActivity.open";
+
+function readPersistedOpen(): boolean {
+  if (typeof window === "undefined") return true;
+  try {
+    const v = window.localStorage.getItem(ACTIVITY_PANEL_OPEN_KEY);
+    if (v === "0") return false;
+    if (v === "1") return true;
+  } catch {
+    // localStorage can throw in private-mode Safari and sandboxed iframes.
+    // Fall back to the default expanded state in that case.
+  }
+  return true;
+}
+
+function writePersistedOpen(open: boolean): void {
+  if (typeof window === "undefined") return;
+  try {
+    window.localStorage.setItem(ACTIVITY_PANEL_OPEN_KEY, open ? "1" : "0");
+  } catch {
+    // Ignore write failures; the panel still works in-memory.
+  }
+}
+
 export function AgentActivityPanel({ projectId }: { projectId: number }) {
   const [session, setSession] = React.useState<ActiveSession | null>(null);
   const [logs, setLogs] = React.useState<LogEvent[]>([]);
   const [statusText, setStatusText] = React.useState<
     "idle" | "connecting" | "streaming" | "completed" | "failed" | "terminated"
   >("idle");
-  const [open, setOpen] = React.useState(true);
+  // Feature #72: the collapsed/expanded state is persisted to localStorage so
+  // a user who prefers a minimal layout doesn't have to re-collapse the panel
+  // on every page load. Default to expanded on first visit.
+  //
+  // We initialise from a lazy initializer so SSR + hydration render the
+  // expanded default (matches the server-rendered DOM) and then an effect
+  // below syncs the persisted value once the client hydrates.
+  const [open, setOpen] = React.useState<boolean>(true);
+  const [hydrated, setHydrated] = React.useState(false);
   const scrollRef = React.useRef<HTMLDivElement>(null);
+
+  React.useEffect(() => {
+    setOpen(readPersistedOpen());
+    setHydrated(true);
+  }, []);
+
+  React.useEffect(() => {
+    if (!hydrated) return;
+    writePersistedOpen(open);
+  }, [open, hydrated]);
 
   // Fetch / poll the active session for this project. Polling every 2s is a
   // trivial fallback; the UI also explicitly re-fetches when the user clicks
@@ -224,6 +271,7 @@ export function AgentActivityPanel({ projectId }: { projectId: number }) {
       data-session-id={session.id}
       data-active={active ? "true" : "false"}
       data-status={statusText}
+      data-open={open ? "true" : "false"}
       className="flex flex-col border-t border-border bg-card/40"
     >
       <button

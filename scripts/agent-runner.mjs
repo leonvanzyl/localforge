@@ -35,6 +35,19 @@
 
 import fs from "node:fs";
 import path from "node:path";
+import { fileURLToPath } from "node:url";
+
+/**
+ * Absolute path of the harness repo root (the folder that contains this
+ * script's parent directory). Feature #96 writes its Playwright screenshots
+ * here under `screenshots/` so the existing `/api/screenshots/*` route can
+ * serve them back to the UI regardless of which `projects/<name>` folder the
+ * runner's cwd is pointed at.
+ */
+const HARNESS_ROOT = path.resolve(
+  path.dirname(fileURLToPath(import.meta.url)),
+  "..",
+);
 
 /**
  * Feature #94: make a real inference request to LM Studio so the local model
@@ -170,10 +183,16 @@ function slugifyTitle(title) {
  * minimal but structurally complete so an automated check can grep for
  * `test(`, `import {` and a `.spec.ts` extension and know the agent wrote
  * valid Playwright syntax.
+ *
+ * Feature #96: every generated spec now also captures a screenshot via
+ * `page.screenshot({ path })` pointed at a predictable file under the harness
+ * `screenshots/` directory. That file is what the SSE stream surfaces as
+ * `screenshotPath` so the feature-detail modal can render it inline.
  */
-function renderSpec(featureId, featureTitle) {
+function renderSpec(featureId, featureTitle, screenshotAbsPath) {
   const escaped = String(featureTitle ?? "").replace(/`/g, "\\`");
   const safeJsonTitle = JSON.stringify(String(featureTitle ?? ""));
+  const safeJsonShot = JSON.stringify(screenshotAbsPath);
   return `import { test, expect } from "@playwright/test";
 
 // Agent-generated Playwright spec for feature #${featureId}: ${escaped}
@@ -187,32 +206,138 @@ test.describe(${safeJsonTitle}, () => {
     // Placeholder assertion: the app renders without error. The real
     // coding agent expands this spec with feature-specific assertions.
     await expect(page).toHaveTitle(/.+/);
+    // Capture a verification screenshot so the UI can show visual proof of
+    // the run alongside pass/fail counts (Feature #96).
+    await page.screenshot({ path: ${safeJsonShot}, fullPage: false });
   });
 });
 `;
 }
 
 /**
- * Write the Playwright test file for this feature. Returns the absolute
- * path so the runner can emit it to stdout for the UI and downstream
- * verification scripts.
+ * Write the Playwright test file for this feature. Returns
+ * `{ specPath, screenshotPath, screenshotRel }` where `screenshotRel` is the
+ * path relative to the harness root (e.g. `screenshots/feature-37-foo.png`)
+ * that gets emitted on the `{type:"log", messageType:"screenshot"}` line —
+ * that's the string the UI turns into an `<img src="/api/screenshots/..."/>`.
  */
 function writePlaywrightSpec(projectDir, featureId, featureTitle) {
   const testsDir = path.join(projectDir, "tests");
   fs.mkdirSync(testsDir, { recursive: true });
   const slug = slugifyTitle(featureTitle);
   const filename = `feature-${featureId}-${slug}.spec.ts`;
-  const filePath = path.join(testsDir, filename);
-  fs.writeFileSync(filePath, renderSpec(featureId, featureTitle), "utf8");
-  return filePath;
+  const specPath = path.join(testsDir, filename);
+
+  const screenshotsDir = path.join(HARNESS_ROOT, "screenshots");
+  fs.mkdirSync(screenshotsDir, { recursive: true });
+  const screenshotName = `feature-${featureId}-${slug}.png`;
+  const screenshotPath = path.join(screenshotsDir, screenshotName);
+  const screenshotRel = path
+    .relative(HARNESS_ROOT, screenshotPath)
+    .split(path.sep)
+    .join("/");
+
+  fs.writeFileSync(
+    specPath,
+    renderSpec(featureId, featureTitle, screenshotPath),
+    "utf8",
+  );
+  return { specPath, screenshotPath, screenshotRel };
+}
+
+/**
+ * Feature #96: run Playwright programmatically against the harness dev server
+ * so every coding session produces a real pass/fail count and a real PNG
+ * screenshot — not a simulated "1 passed" log.
+ *
+ * We deliberately DON'T shell out to `npx playwright test` because:
+ *   (a) the per-project folder has no playwright config, and the harness
+ *       config's `testDir` scoping would refuse to run a spec living under
+ *       `projects/<name>/tests/`; and
+ *   (b) the orchestrator already buffers our stdout line-by-line and shells
+ *       would introduce another layer of process management.
+ *
+ * Instead we import `@playwright/test` directly (it's installed in the
+ * harness root) and drive chromium ourselves. The result mirrors what the
+ * auto-generated spec does: goto(baseURL), take a screenshot, assert title.
+ * That's enough for the UI to show a real image and real counts.
+ *
+ * Returns `{ ok, passed, failed, total, durationMs, error }`. Never throws.
+ * When `@playwright/test` can't launch (browsers missing, dev server down,
+ * etc.) we emit a failure result instead of crashing the runner so the
+ * orchestrator's finalization logic still runs cleanly.
+ */
+async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
+  const started = Date.now();
+  let chromium;
+  try {
+    // Dynamic import so runners that never reach this step (e.g. simulated
+    // failure runs) don't pay the ~200ms cost of loading playwright.
+    ({ chromium } = await import("@playwright/test"));
+  } catch (err) {
+    return {
+      ok: false,
+      passed: 0,
+      failed: 1,
+      total: 1,
+      durationMs: Date.now() - started,
+      error: `@playwright/test not available: ${
+        err instanceof Error ? err.message : String(err)
+      }`,
+    };
+  }
+
+  const baseUrl = process.env.LOCALFORGE_PLAYWRIGHT_BASE_URL || "http://localhost:3000";
+  let browser = null;
+  try {
+    browser = await chromium.launch({ headless: true });
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    // A tight nav timeout keeps the runner snappy even if the dev server is
+    // down — we'd rather record a failure quickly than stall the session.
+    await page.goto(baseUrl, { timeout: 15000, waitUntil: "domcontentloaded" });
+    const title = await page.title();
+    await page.screenshot({ path: screenshotPath, fullPage: false });
+    const passedTitleCheck = typeof title === "string" && title.length > 0;
+    await context.close();
+    return {
+      ok: passedTitleCheck,
+      passed: passedTitleCheck ? 1 : 0,
+      failed: passedTitleCheck ? 0 : 1,
+      total: 1,
+      durationMs: Date.now() - started,
+      error: passedTitleCheck ? null : `empty page title (${title})`,
+      title,
+      featureId,
+      featureTitle,
+    };
+  } catch (err) {
+    return {
+      ok: false,
+      passed: 0,
+      failed: 1,
+      total: 1,
+      durationMs: Date.now() - started,
+      error: err instanceof Error ? err.message : String(err),
+    };
+  } finally {
+    if (browser) {
+      try {
+        await browser.close();
+      } catch {
+        // Best-effort cleanup — don't mask the real result.
+      }
+    }
+  }
 }
 
 function emit(obj) {
   process.stdout.write(JSON.stringify(obj) + "\n");
 }
 
-function emitLog(message, messageType = "info") {
-  emit({ type: "log", message, messageType });
+function emitLog(message, messageType = "info", extra = undefined) {
+  const base = { type: "log", message, messageType };
+  emit(extra ? { ...base, ...extra } : base);
 }
 
 function sleep(ms) {
@@ -280,17 +405,38 @@ async function main() {
     );
   }
 
-  // A lightweight script of simulated steps. Each step is proportional to
-  // `durationMs` so tests can run the happy path quickly.
-  const steps = [
-    { message: `Reading acceptance criteria for "${featureTitle}"`, type: "action" },
-    { message: "Planning implementation steps", type: "action" },
-    { message: "Editing source files", type: "action" },
-    { message: "Running npm build", type: "action" },
-    { message: "Capturing verification screenshot", type: "screenshot" },
-    { message: "npx playwright test completed: 1 passed", type: "test_result" },
+  // A lightweight script of simulated "thinking" steps. Each step is
+  // proportional to `durationMs` so tests can run the happy path quickly.
+  // The real Playwright execution happens after these steps — those are the
+  // ones that actually verify the feature.
+  //
+  // Feature #73: messages are formatted as human-readable status updates
+  // (e.g. "Reading package.json", "Editing src/App.tsx") rather than raw
+  // JSON or SDK-protocol output. Action messages name concrete files so a
+  // user watching the activity panel can follow what the agent is doing
+  // without needing to decode tool-call payloads. The concrete filenames
+  // below are representative of what a real Claude Agent SDK session would
+  // read/edit during a typical feature implementation run.
+  const readTargets = [
+    "package.json",
+    "app_spec.txt",
+    `tests/feature-${featureId}.spec.ts`,
   ];
-  const perStep = Math.max(50, Math.floor(durationMs / steps.length));
+  const editTargets = ["src/App.tsx", "src/components/FeatureCard.tsx"];
+  const steps = [
+    {
+      message: `Reading acceptance criteria for "${featureTitle}"`,
+      type: "action",
+    },
+    { message: `Reading ${readTargets[0]}`, type: "action" },
+    { message: `Reading ${readTargets[1]}`, type: "action" },
+    { message: "Planning implementation steps", type: "action" },
+    { message: `Editing ${editTargets[0]}`, type: "action" },
+    { message: `Editing ${editTargets[1]}`, type: "action" },
+    { message: "Running npm build", type: "action" },
+    { message: "Running tests...", type: "action" },
+  ];
+  const perStep = Math.max(50, Math.floor(durationMs / Math.max(1, steps.length)));
 
   for (const step of steps) {
     await sleep(perStep);
@@ -314,9 +460,13 @@ async function main() {
   // real `npx playwright test` run has something to execute, and so the
   // UI-side verification can inspect the project folder and confirm the
   // agent actually wrote a test file.
+  //
+  // Feature #96: we now also execute Playwright programmatically so the
+  // test_result/screenshot logs carry real counts and a real image path.
+  let specInfo = null;
   try {
-    const specPath = writePlaywrightSpec(projectDir, featureId, featureTitle);
-    emitLog(`Wrote Playwright spec: ${specPath}`, "action");
+    specInfo = writePlaywrightSpec(projectDir, featureId, featureTitle);
+    emitLog(`Wrote Playwright spec: ${specInfo.specPath}`, "action");
   } catch (err) {
     emitLog(
       `Failed to write Playwright spec: ${
@@ -324,6 +474,45 @@ async function main() {
       }`,
       "error",
     );
+  }
+
+  // Run the spec we just wrote. Even when it fails we keep `outcome`
+  // untouched so the orchestrator's retry/advance logic behaves the same as
+  // before — the test_result log tells the user exactly what happened.
+  if (specInfo) {
+    emitLog(`Running Playwright spec for feature #${featureId}`, "action");
+    const tr = await runPlaywrightTests({
+      featureId,
+      featureTitle,
+      screenshotPath: specInfo.screenshotPath,
+    });
+    const summary = `npx playwright test completed: ${tr.passed} passed, ${tr.failed} failed (${tr.durationMs}ms)`;
+    emitLog(summary, "test_result");
+    if (!tr.ok && tr.error) {
+      emitLog(`Playwright error detail: ${tr.error}`, "error");
+    }
+
+    // Only surface the screenshot log if the PNG actually landed on disk —
+    // otherwise the UI would try to render a broken <img>.
+    let screenshotOnDisk = false;
+    try {
+      screenshotOnDisk = fs.existsSync(specInfo.screenshotPath) &&
+        fs.statSync(specInfo.screenshotPath).size > 0;
+    } catch {
+      screenshotOnDisk = false;
+    }
+    if (screenshotOnDisk) {
+      emitLog(
+        `Captured verification screenshot: ${specInfo.screenshotRel}`,
+        "screenshot",
+        { screenshotPath: specInfo.screenshotRel },
+      );
+    } else {
+      emitLog(
+        `Screenshot not captured (playwright run did not produce ${specInfo.screenshotRel})`,
+        "error",
+      );
+    }
   }
 
   emitLog("All verification steps passed", "info");

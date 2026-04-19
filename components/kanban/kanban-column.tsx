@@ -1,5 +1,6 @@
 "use client";
 
+import * as React from "react";
 import type { ReactNode } from "react";
 import { Inbox, Loader2, CheckCircle2, Plus } from "lucide-react";
 
@@ -23,6 +24,17 @@ type KanbanColumnProps = {
    * Backlog column to show this affordance.
    */
   onAdd?: () => void;
+  /**
+   * Optional ref attached to the column's scrollable body. The kanban-board
+   * uses this to register the body as a `useDroppable` target so drag-and-
+   * drop (Feature #47) can detect drops onto empty column space.
+   */
+  bodyRef?: React.Ref<HTMLDivElement>;
+  /**
+   * Optional className appended to the body div - used by the drag layer
+   * to add a hover ring when a card is being dragged over this column.
+   */
+  bodyClassName?: string;
   children?: ReactNode;
 };
 
@@ -38,6 +50,8 @@ export function KanbanColumn({
   emptyHint,
   count,
   onAdd,
+  bodyRef,
+  bodyClassName,
   children,
 }: KanbanColumnProps) {
   const Icon = ICONS[id];
@@ -105,8 +119,12 @@ export function KanbanColumn({
         </div>
       </header>
       <div
+        ref={bodyRef}
         data-testid={`kanban-column-body-${id}`}
-        className="flex min-h-[200px] flex-1 flex-col gap-2 overflow-y-auto p-3"
+        className={cn(
+          "flex min-h-[200px] flex-1 flex-col gap-2 overflow-y-auto p-3",
+          bodyClassName,
+        )}
       >
         {isEmpty ? (
           <p

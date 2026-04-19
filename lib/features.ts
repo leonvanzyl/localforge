@@ -282,6 +282,20 @@ export function countDependencies(featureId: number): number {
 }
 
 /**
+ * Return just the IDs of a feature's prerequisites. Used by the kanban board
+ * (Feature #52) to draw dependency lines without hydrating full feature
+ * records for every edge.
+ */
+export function listDependencyIds(featureId: number): number[] {
+  return db
+    .select({ dependsOnFeatureId: featureDependencies.dependsOnFeatureId })
+    .from(featureDependencies)
+    .where(eq(featureDependencies.featureId, featureId))
+    .all()
+    .map((row) => row.dependsOnFeatureId);
+}
+
+/**
  * Add a dependency: feature `featureId` will now depend on `dependsOnFeatureId`.
  *
  * Enforces:

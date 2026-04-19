@@ -1,8 +1,23 @@
 "use client";
 
 import * as React from "react";
-import { Link2 } from "lucide-react";
+import { CheckCircle2, Link2, XCircle } from "lucide-react";
 import { cn } from "@/lib/utils";
+
+/**
+ * Shape of the "latest Playwright run" summary surfaced on the kanban card by
+ * Feature #96. The server fills this in from the most recent `test_result`
+ * log row tagged to the feature — null when the agent hasn't run a spec yet.
+ */
+export type FeatureTestResultBadge = {
+  passed: number;
+  failed: number;
+  total: number;
+  ok: boolean;
+  durationMs: number | null;
+  rawMessage: string;
+  createdAt: string;
+};
 
 export type FeatureCardData = {
   id: number;
@@ -16,6 +31,17 @@ export type FeatureCardData = {
   createdAt: string;
   updatedAt: string;
   dependencyCount: number;
+  /**
+   * IDs of prerequisite features (the features this one depends on).
+   * Used by the kanban-board (Feature #52) to draw SVG connector lines
+   * between this card and each of its prerequisites.
+   */
+  dependsOn?: number[];
+  /**
+   * Latest Playwright run summary for this feature, or null if the agent
+   * hasn't produced a test_result log yet. Feature #96.
+   */
+  testResult?: FeatureTestResultBadge | null;
 };
 
 /**
@@ -40,6 +66,15 @@ export function FeatureCard({
   const priorityLabel = `Priority ${feature.priority}`;
   const depCount = feature.dependencyCount;
   const depLabel = `${depCount} dependenc${depCount === 1 ? "y" : "ies"}`;
+
+  // Feature #96: render the latest Playwright run summary as a small pass/
+  // fail badge in the card footer. `testResult` is null when no spec has run
+  // for this feature yet, in which case we omit the badge entirely rather
+  // than show a misleading "0 passed / 0 failed".
+  const tr = feature.testResult ?? null;
+  const testBadgeLabel = tr
+    ? `Tests: ${tr.passed} passed${tr.failed > 0 ? `, ${tr.failed} failed` : ""}`
+    : null;
 
   const inner = (
     <>
@@ -84,6 +119,29 @@ export function FeatureCard({
           >
             {feature.category}
           </span>
+          {tr && testBadgeLabel && (
+            <span
+              data-testid={`feature-card-test-result-${feature.id}`}
+              data-test-ok={tr.ok ? "true" : "false"}
+              data-tests-passed={tr.passed}
+              data-tests-failed={tr.failed}
+              title={testBadgeLabel}
+              aria-label={testBadgeLabel}
+              className={cn(
+                "inline-flex shrink-0 items-center gap-0.5 rounded-full border px-1.5 py-0.5 text-[10px] font-medium tabular-nums",
+                tr.ok
+                  ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                  : "border-destructive/40 bg-destructive/10 text-destructive",
+              )}
+            >
+              {tr.ok ? (
+                <CheckCircle2 className="h-3 w-3" aria-hidden="true" />
+              ) : (
+                <XCircle className="h-3 w-3" aria-hidden="true" />
+              )}
+              {tr.passed}/{tr.total}
+            </span>
+          )}
         </div>
         {depCount > 0 && (
           <span
