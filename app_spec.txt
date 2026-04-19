@@ -1,0 +1,573 @@
+<project_specification>
+  <project_name>LocalForge</project_name>
+
+  <overview>
+    LocalForge is a long-running autonomous coding harness that uses free, local AI models (via LM Studio) to build applications on autopilot. Users describe what they want to build, and LocalForge breaks it into features, tracks them on a kanban board, and deploys coding agents to implement and test them one by one — all powered by local models running on the user's own hardware. The target audience is vibe coders who want to describe an app and watch it get built without needing cloud-based AI services.
+  </overview>
+
+  <technology_stack>
+    <frontend>
+      <framework>Next.js 16 with React 19</framework>
+      <styling>Tailwind CSS with shadcn/ui component library</styling>
+      <state_management>React state with server components where appropriate</state_management>
+      <drag_and_drop>dnd-kit or similar for kanban drag-and-drop</drag_and_drop>
+      <notifications>Sonner (shadcn toast), Web Notifications API, Web Audio API</notifications>
+    </frontend>
+    <backend>
+      <runtime>Node.js (Next.js API routes)</runtime>
+      <database>SQLite with Drizzle ORM</database>
+      <agent_sdk>Claude Agent SDK (configured to use LM Studio via ANTHROPIC_BASE_URL)</agent_sdk>
+      <process_management>Node.js child_process for spawning agent sessions</process_management>
+    </backend>
+    <communication>
+      <api>REST API via Next.js API routes</api>
+      <realtime>Server-Sent Events (SSE) for live agent output streaming</realtime>
+    </communication>
+    <testing>
+      <framework>Playwright CLI (npx playwright test)</framework>
+      <screenshots>Playwright screenshot capture for visual verification</screenshots>
+    </testing>
+    <local_model_server>
+      <supported>LM Studio only (MVP)</supported>
+      <default_model>google/gemma-4-31b</default_model>
+      <connection>HTTP via ANTHROPIC_BASE_URL pointing to http://127.0.0.1:1234</connection>
+      <sdk_config>
+        Claude Agent SDK configured via .claude/settings.json:
+        {
+          "env": {
+            "ANTHROPIC_BASE_URL": "http://127.0.0.1:1234"
+          },
+          "model": "google/gemma-4-31b"
+        }
+      </sdk_config>
+    </local_model_server>
+  </technology_stack>
+
+  <prerequisites>
+    <environment_setup>
+      - Node.js 20+ installed
+      - LM Studio installed and running locally with google/gemma-4-31b model loaded
+      - LM Studio API server running on http://127.0.0.1:1234
+      - Claude Agent SDK / Claude Code CLI installed
+      - Playwright installed (npx playwright install)
+    </environment_setup>
+  </prerequisites>
+
+  <feature_count>86</feature_count>
+
+  <security_and_access_control>
+    <user_roles>
+      <role name="single_user">
+        <permissions>
+          - Full access to all features (single-user local application)
+          - No authentication required
+          - No login/logout functionality
+        </permissions>
+        <protected_routes>
+          - None (all routes accessible, single-user app)
+        </protected_routes>
+      </role>
+    </user_roles>
+    <authentication>
+      <method>None - single-user local application</method>
+      <session_timeout>None</session_timeout>
+      <password_requirements>N/A</password_requirements>
+    </authentication>
+    <sensitive_operations>
+      - Delete project requires confirmation dialog with option to remove files from disk
+      - Force-stop orchestrator terminates agent session immediately
+    </sensitive_operations>
+  </security_and_access_control>
+
+  <core_features>
+    <infrastructure>
+      - Database connection established (SQLite via Drizzle ORM)
+      - Database schema applied correctly (all tables created)
+      - Data persists across server restart
+      - No mock data patterns in codebase
+      - Backend API queries real database
+    </infrastructure>
+
+    <app_shell_and_layout>
+      - Sidebar navigation with project list (Claude Code desktop-style layout)
+      - Responsive/mobile-first design with hamburger menu on small screens
+      - Dark mode support (default)
+      - Light mode support
+      - Theme toggle with persistence
+      - Project list in sidebar with status indicators (e.g., "3/12 features done")
+      - Main content area showing selected project's kanban board
+      - Empty state when no projects exist
+    </app_shell_and_layout>
+
+    <project_management>
+      - Create new project with name input
+      - Project folder creation on disk in working directory
+      - Project-specific .claude/settings.json generation with LM Studio config
+      - Delete project with confirmation dialog
+      - Option to remove project files from disk on deletion
+      - Project-specific settings (model, LM Studio URL override)
+      - Global settings page
+      - Working directory configuration
+      - LM Studio URL configuration
+      - Model name configuration
+    </project_management>
+
+    <kanban_board>
+      - Three-column layout: Backlog, In Progress, Completed
+      - Feature cards displaying title, priority, and dependency count
+      - Drag-and-drop features between columns
+      - Drag-and-drop reorder within a column (priority reordering)
+      - Add feature manually via form/modal
+      - Edit feature title inline or via modal
+      - Edit feature description
+      - Edit acceptance criteria
+      - Edit feature priority (numeric)
+      - Edit feature dependencies (select from other features)
+      - Delete feature with confirmation
+      - Dependency visualization with connecting lines between dependent cards
+      - Empty state for each column
+      - Feature card status indicators (icons/colors for priority, dependency status)
+    </kanban_board>
+
+    <ai_project_bootstrapper>
+      - Start AI conversation for new project (chat interface)
+      - Session ID generation and tracking in database
+      - Session status management (in_progress, completed)
+      - Chat interface with message history
+      - AI asks follow-up questions to understand the project
+      - AI generates feature list with dependencies from conversation
+      - Features auto-populate kanban board in Backlog column
+      - Close/end conversation (session marked completed)
+      - Start new conversation for additional features
+      - AI conversation uses local model via Claude Agent SDK / LM Studio
+    </ai_project_bootstrapper>
+
+    <orchestrator_agent_loop>
+      - Start orchestrator button (prominent, clear CTA)
+      - Stop orchestrator button (immediately terminates current agent session)
+      - Orchestrator picks highest-priority Backlog feature
+      - Orchestrator respects dependency order (won't start feature if dependencies incomplete)
+      - Move feature to "In Progress" when assigned to agent
+      - Spawn Claude Agent SDK session with project context
+      - Configure SDK session with LM Studio URL and model from settings
+      - Pass feature title, description, and acceptance criteria to agent
+      - Move feature to "Completed" on successful implementation
+      - Move feature back to Backlog on failure with lowered priority
+      - Auto-skip features with unmet dependencies (move down, retry later)
+      - Orchestrator continues to next feature after completion/failure
+    </orchestrator_agent_loop>
+
+    <agent_activity_and_transparency>
+      - Live agent output panel (collapsible/expandable at bottom or side)
+      - Human-readable status messages ("Reading file X...", "Editing file Y...", "Running tests...")
+      - Embedded Playwright screenshots in agent output view
+      - Per-feature agent logs (stored and viewable after completion)
+      - Real-time streaming updates via SSE
+      - Agent personality in messaging (friendly, informative tone)
+      - Activity history per feature (expandable on feature card)
+      - Screenshot viewer/gallery for captured test screenshots
+      - Streaming terminal-style output for raw SDK logs
+      - Clear visual indicator when agent is active vs idle
+    </agent_activity_and_transparency>
+
+    <playwright_testing>
+      - Agent writes Playwright .spec.ts test files for each feature
+      - Agent runs tests via Playwright CLI (npx playwright test)
+      - Capture and store test results (pass/fail)
+      - Capture and store Playwright screenshots
+      - Report test status on feature card (pass/fail badge)
+    </playwright_testing>
+
+    <notifications>
+      - Toast notification on feature completion (success)
+      - Toast notification on feature failure (error)
+      - Browser push notification (Web Notifications API)
+      - Notification sound effect on completion/failure
+    </notifications>
+
+    <completion_and_polish>
+      - All-features-done detection (orchestrator recognizes completion)
+      - Celebration screen with confetti animation
+      - Project completion summary (features built, time taken, tests passed)
+    </completion_and_polish>
+
+    <settings>
+      - Global settings page accessible from sidebar
+      - Project-specific settings accessible from project view
+      - LM Studio URL configuration (default: http://127.0.0.1:1234)
+      - Model name configuration (default: google/gemma-4-31b)
+      - Working directory configuration for project folders
+    </settings>
+  </core_features>
+
+  <database_schema>
+    <tables>
+      <projects>
+        - id (integer, primary key, auto-increment)
+        - name (text, not null)
+        - description (text, nullable)
+        - folder_path (text, not null, unique)
+        - status (text: active, completed, archived)
+        - created_at (timestamp, default now)
+        - updated_at (timestamp, default now)
+      </projects>
+
+      <features>
+        - id (integer, primary key, auto-increment)
+        - project_id (integer, foreign key -> projects.id)
+        - title (text, not null)
+        - description (text, nullable)
+        - acceptance_criteria (text, nullable)
+        - status (text: backlog, in_progress, completed)
+        - priority (integer, default 0)
+        - category (text: functional, style)
+        - created_at (timestamp, default now)
+        - updated_at (timestamp, default now)
+      </features>
+
+      <feature_dependencies>
+        - id (integer, primary key, auto-increment)
+        - feature_id (integer, foreign key -> features.id)
+        - depends_on_feature_id (integer, foreign key -> features.id)
+      </feature_dependencies>
+
+      <agent_sessions>
+        - id (integer, primary key, auto-increment)
+        - project_id (integer, foreign key -> projects.id)
+        - feature_id (integer, foreign key -> features.id, nullable)
+        - session_type (text: coding, bootstrapper)
+        - status (text: in_progress, completed, failed, terminated)
+        - started_at (timestamp, default now)
+        - ended_at (timestamp, nullable)
+      </agent_sessions>
+
+      <agent_logs>
+        - id (integer, primary key, auto-increment)
+        - session_id (integer, foreign key -> agent_sessions.id)
+        - feature_id (integer, foreign key -> features.id, nullable)
+        - message (text, not null)
+        - message_type (text: info, action, error, screenshot, test_result)
+        - screenshot_path (text, nullable)
+        - created_at (timestamp, default now)
+      </agent_logs>
+
+      <chat_messages>
+        - id (integer, primary key, auto-increment)
+        - session_id (integer, foreign key -> agent_sessions.id)
+        - role (text: user, assistant)
+        - content (text, not null)
+        - created_at (timestamp, default now)
+      </chat_messages>
+
+      <settings>
+        - id (integer, primary key, auto-increment)
+        - project_id (integer, foreign key -> projects.id, nullable for global settings)
+        - key (text, not null)
+        - value (text, not null)
+      </settings>
+    </tables>
+  </database_schema>
+
+  <api_endpoints_summary>
+    <projects>
+      - GET /api/projects (list all projects)
+      - POST /api/projects (create new project)
+      - GET /api/projects/:id (get project details)
+      - PATCH /api/projects/:id (update project)
+      - DELETE /api/projects/:id (delete project, optional file removal)
+    </projects>
+    <features>
+      - GET /api/projects/:id/features (list features for project)
+      - POST /api/projects/:id/features (create feature)
+      - PATCH /api/features/:id (update feature - title, description, priority, status)
+      - DELETE /api/features/:id (delete feature)
+      - PATCH /api/features/:id/status (move feature between columns)
+      - PUT /api/projects/:id/features/reorder (reorder features / update priorities)
+    </features>
+    <dependencies>
+      - GET /api/features/:id/dependencies (get dependencies for feature)
+      - POST /api/features/:id/dependencies (add dependency)
+      - DELETE /api/features/:featureId/dependencies/:depId (remove dependency)
+    </dependencies>
+    <orchestrator>
+      - POST /api/projects/:id/orchestrator/start (start orchestrator for project)
+      - POST /api/projects/:id/orchestrator/stop (force-stop orchestrator)
+      - GET /api/projects/:id/orchestrator/status (get orchestrator status)
+    </orchestrator>
+    <agent>
+      - GET /api/agent/stream/:sessionId (SSE stream for live agent output)
+      - GET /api/agent/logs/:featureId (get agent logs for a feature)
+      - GET /api/agent/screenshots/:logId (serve screenshot image)
+    </agent>
+    <bootstrapper>
+      - POST /api/projects/:id/bootstrapper/start (start AI conversation session)
+      - POST /api/bootstrapper/:sessionId/message (send message in conversation)
+      - GET /api/bootstrapper/:sessionId/messages (get conversation history)
+      - POST /api/bootstrapper/:sessionId/complete (mark conversation complete)
+    </bootstrapper>
+    <settings>
+      - GET /api/settings (get global settings)
+      - PUT /api/settings (update global settings)
+      - GET /api/projects/:id/settings (get project settings)
+      - PUT /api/projects/:id/settings (update project settings)
+    </settings>
+  </api_endpoints_summary>
+
+  <ui_layout>
+    <main_structure>
+      Claude Code desktop-inspired layout:
+      - Left sidebar (collapsible on mobile): Project list with status indicators, "+ New Project" button, global settings link
+      - Main content area: Displays the kanban board for the selected project
+      - Bottom/side collapsible panel: Agent activity output with live streaming
+      - The sidebar collapses to a hamburger menu on mobile viewports
+    </main_structure>
+
+    <screens>
+      <empty_state>
+        When no projects exist: Welcome message with prominent "Create Your First Project" CTA
+      </empty_state>
+
+      <project_kanban>
+        - Project header with name, progress indicator, orchestrator start/stop controls
+        - Three-column kanban board (Backlog | In Progress | Completed)
+        - Feature cards with title, priority badge, dependency indicators
+        - Drag-and-drop support within and between columns
+        - "+ Add Feature" button in Backlog column header
+        - Dependency visualization lines between related feature cards
+      </project_kanban>
+
+      <feature_detail_modal>
+        - Full feature editing: title, description, acceptance criteria, priority
+        - Dependency management (add/remove dependencies from dropdown)
+        - Agent logs viewer for this specific feature
+        - Playwright screenshots gallery
+        - Test results (pass/fail)
+      </feature_detail_modal>
+
+      <ai_bootstrapper_chat>
+        - Chat-style interface within the main content area
+        - Message bubbles for user and AI
+        - "Generate Features" or natural conversation flow
+        - Session status indicator
+        - Close/complete conversation button
+      </ai_bootstrapper_chat>
+
+      <new_project_dialog>
+        - Project name input
+        - Choice: "Add features manually" or "Describe your project to AI"
+        - Creates project folder on disk
+      </new_project_dialog>
+
+      <settings_page>
+        - Global settings: LM Studio URL, default model, working directory
+        - Project settings: model override, LM Studio URL override
+        - Tabbed or sectioned layout
+      </settings_page>
+
+      <celebration_screen>
+        - Confetti animation
+        - Project completion summary
+        - Stats: features completed, total time, tests passed
+      </celebration_screen>
+    </screens>
+  </ui_layout>
+
+  <design_system>
+    <color_palette>
+      Dark mode (default):
+      - Background: Neutral 950/900 (very dark gray, near black)
+      - Surface: Neutral 800/850 (card backgrounds)
+      - Primary: Blue 500/600 (actions, links, active states)
+      - Success: Green 500 (completed features, passed tests)
+      - Warning: Amber 500 (in-progress, retried features)
+      - Danger: Red 500 (failed features, errors, stop button)
+      - Text: Neutral 50/100 (primary text), Neutral 400 (secondary text)
+
+      Light mode:
+      - Background: White / Neutral 50
+      - Surface: Neutral 100/200
+      - Same accent colors adjusted for light backgrounds
+    </color_palette>
+    <typography>
+      - Font: System font stack (Inter if available, then system defaults)
+      - Monospace: JetBrains Mono or system monospace for agent output/logs
+      - Headings: Semi-bold, clean hierarchy
+      - Body: Regular weight, comfortable reading size
+    </typography>
+    <design_principles>
+      - Modern, clean aesthetic matching Claude Code desktop / Cursor style
+      - Generous whitespace
+      - Subtle borders and shadows
+      - Smooth transitions and animations
+      - Focus on readability and information density balance
+    </design_principles>
+  </design_system>
+
+  <implementation_steps>
+    <step number="1">
+      <title>Project Foundation</title>
+      <tasks>
+        - Initialize Next.js 16 project with React 19
+        - Configure Tailwind CSS and shadcn/ui
+        - Set up Drizzle ORM with SQLite
+        - Create database schema and migrations
+        - Set up project structure (app router, components, lib, db)
+        - Implement dark/light theme support
+      </tasks>
+    </step>
+
+    <step number="2">
+      <title>App Shell and Navigation</title>
+      <tasks>
+        - Build sidebar layout (Claude Code desktop style)
+        - Implement responsive design with mobile hamburger menu
+        - Create project list component in sidebar
+        - Build empty state / welcome screen
+        - Implement theme toggle
+      </tasks>
+    </step>
+
+    <step number="3">
+      <title>Project CRUD</title>
+      <tasks>
+        - Build new project dialog/modal
+        - Implement project creation API (with folder creation on disk)
+        - Implement project deletion with confirmation and file removal option
+        - Build project settings page
+        - Implement global settings page
+        - Generate .claude/settings.json for each project
+      </tasks>
+    </step>
+
+    <step number="4">
+      <title>Kanban Board</title>
+      <tasks>
+        - Build three-column kanban layout
+        - Create feature card components
+        - Implement drag-and-drop (between columns and within columns)
+        - Build "Add Feature" form/modal
+        - Build feature detail/edit modal
+        - Implement feature CRUD API endpoints
+        - Implement priority reordering
+      </tasks>
+    </step>
+
+    <step number="5">
+      <title>Feature Dependencies</title>
+      <tasks>
+        - Implement dependency management in feature detail modal
+        - Build dependency visualization (connecting lines between cards)
+        - Implement dependency validation (no circular deps)
+        - Add dependency indicators on feature cards
+      </tasks>
+    </step>
+
+    <step number="6">
+      <title>AI Project Bootstrapper</title>
+      <tasks>
+        - Build chat interface component
+        - Implement bootstrapper session management (create, track, complete)
+        - Integrate Claude Agent SDK for AI conversation via LM Studio
+        - Implement feature generation from conversation
+        - Auto-populate kanban board from generated features
+        - Handle session completion and conversation locking
+      </tasks>
+    </step>
+
+    <step number="7">
+      <title>Orchestrator & Agent Loop</title>
+      <tasks>
+        - Build orchestrator engine (feature selection, dependency checking)
+        - Implement Claude Agent SDK session spawning
+        - Configure agent sessions with LM Studio settings
+        - Implement feature status transitions (backlog → in_progress → completed/backlog)
+        - Handle agent failures and priority demotion
+        - Implement force-stop (immediate session termination)
+        - Build start/stop UI controls
+      </tasks>
+    </step>
+
+    <step number="8">
+      <title>Agent Activity & Transparency</title>
+      <tasks>
+        - Implement SSE streaming for live agent output
+        - Build agent activity panel (collapsible)
+        - Parse and display human-readable status messages
+        - Implement agent log storage per feature
+        - Build log viewer in feature detail modal
+        - Add agent personality to status messages
+      </tasks>
+    </step>
+
+    <step number="9">
+      <title>Playwright Testing Integration</title>
+      <tasks>
+        - Configure Playwright for agent-driven testing
+        - Implement screenshot capture and storage
+        - Build screenshot viewer/gallery
+        - Display test results on feature cards
+        - Embed screenshots in agent activity view
+      </tasks>
+    </step>
+
+    <step number="10">
+      <title>Notifications & Completion</title>
+      <tasks>
+        - Implement toast notifications (Sonner)
+        - Implement browser push notifications
+        - Add notification sounds
+        - Build all-features-done detection
+        - Create celebration screen with confetti animation
+        - Build project completion summary
+      </tasks>
+    </step>
+
+    <step number="11">
+      <title>Polish & Edge Cases</title>
+      <tasks>
+        - Handle edge cases (network errors, empty states, long text)
+        - Responsive design testing and fixes
+        - Accessibility improvements
+        - Performance optimization
+        - Error boundaries and graceful error handling
+        - Loading states and skeleton screens
+      </tasks>
+    </step>
+  </implementation_steps>
+
+  <success_criteria>
+    <functionality>
+      - Users can create projects that generate real folders on disk
+      - Users can add features manually or via AI conversation bootstrapper
+      - Kanban board supports full drag-and-drop with priority management
+      - Orchestrator spawns coding agents that implement features using local models
+      - Features move through Backlog → In Progress → Completed automatically
+      - Dependency order is respected by the orchestrator
+      - Failed features are demoted and retried later
+      - Force-stop immediately terminates the active agent
+      - Playwright tests are written and run for each feature
+    </functionality>
+    <user_experience>
+      - Modern, polished UI matching Claude Code desktop aesthetic
+      - Smooth drag-and-drop interactions on kanban board
+      - Real-time visibility into what the agent is doing
+      - Clear notifications (toast, browser, sound) for feature completion/failure
+      - Satisfying confetti celebration on project completion
+      - Responsive design works on mobile through desktop
+    </user_experience>
+    <technical_quality>
+      - All data persists in SQLite via Drizzle ORM (survives server restart)
+      - SSE streaming provides real-time updates without polling
+      - Clean API design with proper error handling
+      - No mock data patterns anywhere in codebase
+      - Proper process management for spawned agent sessions
+    </technical_quality>
+    <design_polish>
+      - Dark and light mode both look professional
+      - Consistent spacing, typography, and color usage
+      - Smooth animations and transitions
+      - Clean empty states and loading states
+      - Dependency visualization is clear and intuitive
+    </design_polish>
+  </success_criteria>
+</project_specification>

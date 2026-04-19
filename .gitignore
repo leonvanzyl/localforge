@@ -1,0 +1,61 @@
+# Dependencies
+node_modules/
+.pnp/
+.pnp.js
+.yarn/
+
+# Testing
+/coverage
+.playwright-cli/
+.playwright/
+playwright-report/
+test-results/
+
+# Next.js
+.next/
+out/
+next-env.d.ts
+
+# Production
+build/
+dist/
+
+# Misc
+.DS_Store
+*.pem
+.vscode/
+.idea/
+
+# Debug
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+dev-server.log
+
+# Local env files
+.env
+.env.local
+.env.development.local
+.env.test.local
+.env.production.local
+
+# Vercel
+.vercel
+
+# TypeScript
+*.tsbuildinfo
+
+# SQLite databases (user data, not code)
+/data/*.db
+/data/*.db-journal
+/data/*.db-shm
+/data/*.db-wal
+
+# LocalForge-generated project folders (user projects)
+/projects/
+
+# Screenshots captured during agent runs
+/screenshots/
+
+# Harness internals (not part of the app)
+.autoforge/
