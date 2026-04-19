@@ -1,0 +1,473 @@
+"use client";
+
+import * as React from "react";
+import { Loader2, Link2, X as XIcon } from "lucide-react";
+
+import { Button } from "@/components/ui/button";
+import { Input } from "@/components/ui/input";
+import {
+  Dialog,
+  DialogBody,
+  DialogCloseButton,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
+import type { FeatureCardData } from "./feature-card";
+
+const TITLE_MAX = 200;
+const DESC_MAX = 5000;
+
+type DetailFeature = FeatureCardData;
+
+/**
+ * Modal for viewing and editing a single feature.
+ *
+ * Supported edits:
+ *   - title
+ *   - description
+ *   - acceptance criteria
+ *   - status (backlog | in_progress | completed)
+ *   - dependencies (multi-select from other features in the same project)
+ *
+ * When Save is clicked we PATCH /api/features/:id with changed fields and
+ * (separately) POST /api/features/:id/dependencies with the full new set.
+ * On success the parent re-fetches the feature list so the kanban updates.
+ */
+export function FeatureDetailDialog({
+  open,
+  featureId,
+  projectId,
+  onOpenChange,
+  onSaved,
+  allFeatures,
+}: {
+  open: boolean;
+  featureId: number | null;
+  projectId: number;
+  onOpenChange: (open: boolean) => void;
+  onSaved?: () => void;
+  allFeatures: DetailFeature[];
+}) {
+  const [feature, setFeature] = React.useState<DetailFeature | null>(null);
+  const [title, setTitle] = React.useState("");
+  const [description, setDescription] = React.useState("");
+  const [acceptanceCriteria, setAcceptanceCriteria] = React.useState("");
+  const [status, setStatus] = React.useState<
+    "backlog" | "in_progress" | "completed"
+  >("backlog");
+  const [deps, setDeps] = React.useState<number[]>([]);
+  const [initialDeps, setInitialDeps] = React.useState<number[]>([]);
+  const [loading, setLoading] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+  const [error, setError] = React.useState<string | null>(null);
+  const [fieldError, setFieldError] = React.useState<string | null>(null);
+  const [depPick, setDepPick] = React.useState<string>("");
+
+  React.useEffect(() => {
+    if (!open || featureId == null) return;
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+    setFieldError(null);
+
+    async function load(id: number) {
+      try {
+        const [fRes, dRes] = await Promise.all([
+          fetch(`/api/features/${id}`, { cache: "no-store" }),
+          fetch(`/api/features/${id}/dependencies`, { cache: "no-store" }),
+        ]);
+        if (!fRes.ok) {
+          throw new Error(`Failed to load feature (${fRes.status})`);
+        }
+        const fData = (await fRes.json()) as {
+          feature: DetailFeature;
+        };
+        const dData = dRes.ok
+          ? ((await dRes.json()) as { dependencies: DetailFeature[] })
+          : { dependencies: [] as DetailFeature[] };
+        if (cancelled) return;
+        setFeature(fData.feature);
+        setTitle(fData.feature.title);
+        setDescription(fData.feature.description ?? "");
+        setAcceptanceCriteria(fData.feature.acceptanceCriteria ?? "");
+        setStatus(fData.feature.status);
+        const depIds = dData.dependencies.map((d) => d.id);
+        setDeps(depIds);
+        setInitialDeps(depIds);
+        setDepPick("");
+      } catch (err) {
+        if (!cancelled) {
+          setError(
+            err instanceof Error ? err.message : "Failed to load feature",
+          );
+        }
+      } finally {
+        if (!cancelled) setLoading(false);
+      }
+    }
+    load(featureId);
+    return () => {
+      cancelled = true;
+    };
+  }, [open, featureId]);
+
+  const candidateDeps = React.useMemo(() => {
+    if (!feature) return [] as DetailFeature[];
+    return allFeatures.filter(
+      (f) => f.id !== feature.id && !deps.includes(f.id),
+    );
+  }, [allFeatures, feature, deps]);
+
+  const depDetails = React.useMemo(() => {
+    return deps
+      .map((id) => allFeatures.find((f) => f.id === id))
+      .filter((f): f is DetailFeature => Boolean(f));
+  }, [deps, allFeatures]);
+
+  function addDep(raw: string) {
+    const n = Number.parseInt(raw, 10);
+    if (!Number.isFinite(n) || n <= 0) return;
+    setDeps((cur) => (cur.includes(n) ? cur : [...cur, n]));
+    setDepPick("");
+  }
+
+  function removeDep(id: number) {
+    setDeps((cur) => cur.filter((d) => d !== id));
+  }
+
+  function validate(): string | null {
+    const trimmed = title.trim();
+    if (trimmed.length === 0) return "Title is required";
+    if (trimmed.length > TITLE_MAX) {
+      return `Title must be ${TITLE_MAX} characters or fewer`;
+    }
+    if (description.length > DESC_MAX) {
+      return `Description must be ${DESC_MAX} characters or fewer`;
+    }
+    return null;
+  }
+
+  async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
+    e.preventDefault();
+    if (!feature) return;
+    const validationError = validate();
+    if (validationError) {
+      setFieldError(validationError);
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    setFieldError(null);
+
+    // Build a PATCH body with only changed fields so the backend doesn't
+    // accidentally clobber things we didn't touch.
+    const patch: Record<string, unknown> = {};
+    const nextTitle = title.trim();
+    if (nextTitle !== feature.title) patch.title = nextTitle;
+    if ((description || null) !== feature.description) {
+      patch.description = description.length === 0 ? null : description;
+    }
+    if ((acceptanceCriteria || null) !== feature.acceptanceCriteria) {
+      patch.acceptanceCriteria =
+        acceptanceCriteria.length === 0 ? null : acceptanceCriteria;
+    }
+    if (status !== feature.status) patch.status = status;
+
+    try {
+      if (Object.keys(patch).length > 0) {
+        const res = await fetch(`/api/features/${feature.id}`, {
+          method: "PATCH",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify(patch),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        if (!res.ok) {
+          throw new Error(data.error || `Update failed (${res.status})`);
+        }
+      }
+
+      // If the dependency set changed, push the full new list.
+      const depsChanged =
+        deps.length !== initialDeps.length ||
+        deps.some((d) => !initialDeps.includes(d));
+      if (depsChanged) {
+        const res = await fetch(
+          `/api/features/${feature.id}/dependencies`,
+          {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ dependsOn: deps }),
+          },
+        );
+        const data = (await res.json().catch(() => ({}))) as {
+          error?: string;
+        };
+        if (!res.ok) {
+          throw new Error(
+            data.error || `Dependency update failed (${res.status})`,
+          );
+        }
+      }
+
+      if (onSaved) onSaved();
+      onOpenChange(false);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Failed to save");
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog
+      open={open}
+      onOpenChange={(o) => {
+        if (!o && !saving) onOpenChange(false);
+      }}
+      labelledBy="feature-detail-title"
+    >
+      <DialogCloseButton onClick={() => onOpenChange(false)} />
+      <div className="max-h-[85vh] overflow-y-auto">
+        <form
+          onSubmit={handleSubmit}
+          data-testid="feature-detail-form"
+          noValidate
+        >
+          <DialogHeader>
+            <DialogTitle id="feature-detail-title">
+              {feature ? `Feature #${feature.id}` : "Feature details"}
+            </DialogTitle>
+          </DialogHeader>
+          <DialogBody className="space-y-4">
+            {loading && (
+              <p
+                data-testid="feature-detail-loading"
+                className="text-sm text-muted-foreground"
+              >
+                Loading…
+              </p>
+            )}
+
+            {!loading && feature && (
+              <>
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="feature-detail-title-input"
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Title <span className="text-destructive">*</span>
+                  </label>
+                  <Input
+                    id="feature-detail-title-input"
+                    data-testid="feature-detail-title-input"
+                    value={title}
+                    onChange={(e) => {
+                      setTitle(e.target.value);
+                      if (fieldError) setFieldError(null);
+                      if (error) setError(null);
+                    }}
+                    disabled={saving}
+                    maxLength={TITLE_MAX}
+                    aria-invalid={fieldError ? "true" : "false"}
+                  />
+                  {fieldError && (
+                    <p
+                      role="alert"
+                      data-testid="feature-detail-field-error"
+                      className="text-xs text-destructive"
+                    >
+                      {fieldError}
+                    </p>
+                  )}
+                </div>
+
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="feature-detail-description"
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Description
+                  </label>
+                  <textarea
+                    id="feature-detail-description"
+                    data-testid="feature-detail-description"
+                    value={description}
+                    onChange={(e) => setDescription(e.target.value)}
+                    disabled={saving}
+                    rows={4}
+                    maxLength={DESC_MAX}
+                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="feature-detail-acceptance"
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Acceptance criteria
+                  </label>
+                  <textarea
+                    id="feature-detail-acceptance"
+                    data-testid="feature-detail-acceptance"
+                    value={acceptanceCriteria}
+                    onChange={(e) => setAcceptanceCriteria(e.target.value)}
+                    disabled={saving}
+                    rows={3}
+                    maxLength={DESC_MAX}
+                    className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  />
+                </div>
+
+                <div className="space-y-1.5">
+                  <label
+                    htmlFor="feature-detail-status"
+                    className="text-sm font-medium text-foreground"
+                  >
+                    Status
+                  </label>
+                  <select
+                    id="feature-detail-status"
+                    data-testid="feature-detail-status"
+                    value={status}
+                    onChange={(e) =>
+                      setStatus(
+                        e.target.value as
+                          | "backlog"
+                          | "in_progress"
+                          | "completed",
+                      )
+                    }
+                    disabled={saving}
+                    className="flex h-10 w-full rounded-md border border-input bg-background px-3 py-2 text-sm ring-offset-background focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                  >
+                    <option value="backlog">Backlog</option>
+                    <option value="in_progress">In Progress</option>
+                    <option value="completed">Completed</option>
+                  </select>
+                </div>
+
+                <div
+                  className="space-y-2"
+                  data-testid="feature-detail-deps-section"
+                >
+                  <label className="flex items-center gap-1 text-sm font-medium text-foreground">
+                    <Link2 className="h-3.5 w-3.5" aria-hidden="true" />
+                    Dependencies
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Features this one depends on. It will only be "ready"
+                    after all dependencies are completed.
+                  </p>
+                  {depDetails.length > 0 ? (
+                    <ul
+                      data-testid="feature-detail-deps-list"
+                      className="flex flex-wrap gap-1.5"
+                    >
+                      {depDetails.map((d) => (
+                        <li key={d.id}>
+                          <span
+                            data-testid={`feature-detail-dep-${d.id}`}
+                            className="inline-flex items-center gap-1 rounded-full border border-border bg-muted px-2 py-0.5 text-xs text-foreground"
+                          >
+                            <span className="truncate max-w-[200px]">
+                              #{d.id} {d.title}
+                            </span>
+                            <button
+                              type="button"
+                              aria-label={`Remove dependency #${d.id}`}
+                              data-testid={`feature-detail-dep-remove-${d.id}`}
+                              onClick={() => removeDep(d.id)}
+                              className="rounded-full p-0.5 hover:bg-destructive/20 hover:text-destructive"
+                              disabled={saving}
+                            >
+                              <XIcon className="h-3 w-3" aria-hidden="true" />
+                            </button>
+                          </span>
+                        </li>
+                      ))}
+                    </ul>
+                  ) : (
+                    <p
+                      data-testid="feature-detail-deps-empty"
+                      className="text-xs text-muted-foreground"
+                    >
+                      No dependencies yet.
+                    </p>
+                  )}
+                  {candidateDeps.length > 0 && (
+                    <div className="flex items-center gap-2">
+                      <select
+                        data-testid="feature-detail-dep-picker"
+                        value={depPick}
+                        onChange={(e) => setDepPick(e.target.value)}
+                        disabled={saving}
+                        className="flex h-9 flex-1 rounded-md border border-input bg-background px-2 text-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      >
+                        <option value="">Pick a feature…</option>
+                        {candidateDeps.map((c) => (
+                          <option key={c.id} value={c.id}>
+                            #{c.id} {c.title}
+                          </option>
+                        ))}
+                      </select>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        data-testid="feature-detail-dep-add"
+                        disabled={saving || depPick === ""}
+                        onClick={() => addDep(depPick)}
+                      >
+                        Add
+                      </Button>
+                    </div>
+                  )}
+                </div>
+              </>
+            )}
+
+            {error && (
+              <p
+                role="alert"
+                data-testid="feature-detail-error"
+                className="text-sm text-destructive"
+              >
+                {error}
+              </p>
+            )}
+          </DialogBody>
+          <DialogFooter>
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => onOpenChange(false)}
+              disabled={saving}
+              data-testid="feature-detail-cancel"
+            >
+              Close
+            </Button>
+            <Button
+              type="submit"
+              disabled={saving || loading || !feature}
+              data-testid="feature-detail-save"
+            >
+              {saving ? (
+                <>
+                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                  Saving…
+                </>
+              ) : (
+                "Save changes"
+              )}
+            </Button>
+          </DialogFooter>
+        </form>
+      </div>
+    </Dialog>
+  );
+}

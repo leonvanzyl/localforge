@@ -1,7 +1,7 @@
 "use client";
 
 import type { ReactNode } from "react";
-import { Inbox, Loader2, CheckCircle2 } from "lucide-react";
+import { Inbox, Loader2, CheckCircle2, Plus } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -15,6 +15,14 @@ type KanbanColumnProps = {
   id: "backlog" | "in_progress" | "completed";
   title: string;
   emptyHint: string;
+  /** Card count - shown as a small badge in the column header. */
+  count?: number;
+  /**
+   * If provided, a "+ Add feature" button is rendered in the column header
+   * and triggers this callback when clicked. Feature #40 requires the
+   * Backlog column to show this affordance.
+   */
+  onAdd?: () => void;
   children?: ReactNode;
 };
 
@@ -28,17 +36,24 @@ export function KanbanColumn({
   id,
   title,
   emptyHint,
+  count,
+  onAdd,
   children,
 }: KanbanColumnProps) {
   const Icon = ICONS[id];
-  const isEmpty =
-    children == null ||
-    (Array.isArray(children) && children.filter(Boolean).length === 0);
+  const childArray = Array.isArray(children)
+    ? children.filter(Boolean)
+    : children == null
+      ? []
+      : [children];
+  const isEmpty = childArray.length === 0;
+  const displayCount = typeof count === "number" ? count : childArray.length;
 
   return (
     <section
       data-testid={`kanban-column-${id}`}
       data-column-id={id}
+      data-count={displayCount}
       aria-label={title}
       className={cn(
         "flex min-w-[280px] flex-1 flex-col rounded-lg border border-border bg-card/40",
@@ -64,6 +79,29 @@ export function KanbanColumn({
           >
             {title}
           </h2>
+        </div>
+        <div className="flex items-center gap-2">
+          <span
+            data-testid={`kanban-column-count-${id}`}
+            aria-label={`${displayCount} ${
+              displayCount === 1 ? "feature" : "features"
+            }`}
+            className="rounded-full border border-border bg-background/60 px-2 py-0.5 text-[10px] font-semibold tabular-nums text-muted-foreground"
+          >
+            {displayCount}
+          </span>
+          {onAdd && (
+            <button
+              type="button"
+              onClick={onAdd}
+              data-testid={`kanban-column-add-${id}`}
+              aria-label={`Add feature to ${title}`}
+              className="inline-flex items-center gap-1 rounded-md border border-border bg-background px-2 py-0.5 text-[11px] font-medium text-foreground transition-colors hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+            >
+              <Plus className="h-3 w-3" aria-hidden="true" />
+              Add Feature
+            </button>
+          )}
         </div>
       </header>
       <div

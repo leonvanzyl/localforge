@@ -1,8 +1,10 @@
 import { notFound } from "next/navigation";
 
 import { getProject } from "@/lib/projects";
+import { getActiveSessionForProject } from "@/lib/agent-sessions";
 import { KanbanBoard } from "@/components/kanban/kanban-board";
 import { ProjectHeaderActions } from "@/components/app-shell/project-header-actions";
+import { BootstrapperPanel } from "@/components/bootstrapper/bootstrapper-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -21,6 +23,15 @@ export default async function ProjectPage({ params }: PageProps) {
   if (!project) {
     notFound();
   }
+
+  // If there is an active bootstrapper session for this project, render the
+  // AI chat panel instead of the kanban board. The session is created from
+  // the New Project dialog when the user selects "Describe your project to
+  // AI" (Feature #55).
+  const bootstrapperSession = getActiveSessionForProject(
+    project.id,
+    "bootstrapper",
+  );
 
   return (
     <div
@@ -61,8 +72,16 @@ export default async function ProjectPage({ params }: PageProps) {
         </div>
       </header>
 
-      <div className="flex-1 overflow-hidden">
-        <KanbanBoard projectId={project.id} />
+      <div className="flex flex-1 flex-col overflow-hidden">
+        {bootstrapperSession ? (
+          <BootstrapperPanel
+            sessionId={bootstrapperSession.id}
+            projectId={project.id}
+            projectName={project.name}
+          />
+        ) : (
+          <KanbanBoard projectId={project.id} />
+        )}
       </div>
     </div>
   );
