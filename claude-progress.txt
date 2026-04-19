@@ -68,3 +68,32 @@
 ### Status
 
 5/86 features passing. Next agent can pick up from feature 6.
+
+## Session 2 (2026-04-19) - Feature #10
+
+### Completed: Feature #10 SQLite database file created on startup
+
+Verification performed (all 6 spec steps):
+  1. Deleted ./data/localforge.db + -shm + -wal files.
+  2. Confirmed no server bound to port 3000 (scripts/kill-port.js).
+  3. Ran ./init.sh --background to simulate "first run".
+     - init.sh runs `npx drizzle-kit migrate` then `npm run dev -- --port 3000`.
+     - Both paths create the file if missing:
+         a) drizzle-kit migrate (during [2/3])
+         b) lib/db/index.ts bootstrap: fs.mkdirSync + new Database(DB_PATH)
+  4. After 15s wait: ./data/localforge.db present, 53,248 bytes (non-empty).
+  5. Ran scripts/verify-schema.js - all 7 expected tables present with
+     correct columns: projects, features, feature_dependencies,
+     agent_sessions, agent_logs, chat_messages, settings.
+  6. Opened http://localhost:3000 via playwright-cli:
+     - HTTP 200, page title "LocalForge", landing copy rendered.
+     - Console: 0 errors, 0 warnings.
+
+Mock-data scan (STEP 5.6) clean: only hit is a doc comment in
+lib/db/index.ts:17 explicitly stating "never in-memory or globalThis-
+based storage".
+
+No code changes required - existing lib/db/index.ts + drizzle.config.ts +
+init.sh already satisfy this feature. Marked #10 passing.
+
+6/86 features passing after this session.
