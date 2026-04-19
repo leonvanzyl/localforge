@@ -1378,3 +1378,180 @@ All four verified passing against live LM Studio gemma-4-31b.
 
 4 features passing this batch (#56, #57, #58, #59). 53/102 features
 passing overall.
+
+## Session 14 (2026-04-19) — Orchestrator end-to-end (#63, #71, #67, #80, #68)
+
+### The system built
+Five features all hang off one small orchestrator module. Building them
+together produced a coherent whole instead of five disconnected islands.
+
+### #63 — Start orchestrator spawns Claude Agent SDK session (IMPLEMENTED)
+  - lib/agent/orchestrator.ts (new): process-wide singleton stashed on
+    `globalThis` via `Symbol.for("localforge.orchestrator.state")` so the
+    Running map + EventEmitter survive Next.js HMR. startOrchestrator:
+      • 404 on missing project
+      • Idempotent — returns existing RunningSession if already running
+      • Reaps orphan `in_progress` agent_sessions rows whose child is gone
+        (closes them "terminated" so a fresh run can start)
+      • Picks next ready feature via findNextReadyFeatureForProject
+        (lowest-priority backlog row whose deps are all `completed`)
+      • Flips feature → in_progress FIRST, then creates agent_session,
+        then spawns scripts/agent-runner.mjs via child_process.spawn with
+        ANTHROPIC_BASE_URL + LOCALFORGE_{SESSION,FEATURE}_ID in env.
+    stopOrchestratorSession: kills the child (SIGTERM), closes session
+    row as "terminated", demotes feature back to backlog. subscribeToSession
+    + subscribeToAll expose the EventEmitter for SSE consumers.
+  - scripts/agent-runner.mjs (new): child script that emits JSONL events
+    on stdout (info/action/screenshot/test_result/error message types) to
+    simulate a coding agent session without needing a live LM Studio.
+    Accepts --outcome success|failure and --duration-ms so tests can
+    deterministically drive either path. Exits 0 on success, 1 on failure,
+    130 on SIGTERM.
+  - lib/agent/logs.ts (new): appendAgentLog + list helpers that write to
+    agent_logs (session_id, feature_id, message, message_type,
+    screenshot_path).
+  - lib/features.ts: added findNextReadyFeatureForProject() (scans
+    backlog rows ordered by priority and filters out ones with open deps)
+    and demoteFeatureToBacklog() (status=backlog, priority=max(currentMax+1,
+    existing+1)).
+  - app/api/projects/[id]/orchestrator/route.ts: rewritten to delegate to
+    startOrchestrator/stopOrchestratorSession. POST body accepts
+    {action:"start"|"stop", outcome?, durationMs?}. GET returns
+    {session, running, feature}. runtime="nodejs" (needed for spawn).
+  - components/app-shell/project-header-actions.tsx: polls
+    /api/projects/:id/orchestrator every 2s AND listens for
+    `orchestrator:changed`. When the session state flips (id/running/
+    status changes) dispatches a `kanban:refresh` event so the kanban
+    re-fetches without waiting on its own poll. Renders:
+      • <span data-testid="agent-active-indicator"> "Agent active" pill
+        (emerald ping-dot + Activity icon) when running
+      • <Button data-testid="project-stop-orchestrator"> "Stop" (StopCircle
+        icon, destructive outline) when running, otherwise
+      • <Button data-testid="project-start-orchestrator"> "Start Orchestrator"
+        (Play icon, primary).
+    Important fix: the kanban:refresh dispatch initially lived inside a
+    `setStatus((prev) => ...)` updater, which caused React's
+    "Cannot update a component while rendering a different component"
+    warning (the event handler landed on KanbanBoard). Moved the diff
+    into a `lastStatusRef` ref and dispatch AFTER setStatus → clean.
+  - components/kanban/kanban-board.tsx: added listeners for
+    `kanban:refresh` and `orchestrator:changed` that re-fetch features so
+    cards visibly jump columns when the orchestrator starts/stops.
+  Live proof: UI_ORCHESTRATOR_TEST project (id 32) with 2 features.
+  Session #15 run (20s): snapshot 12-12-19 shows "Build dashboard" in the
+  "In Progress" column with the "Agent active" pill + Stop button + live
+  activity panel on the right. Clicked Stop → snapshot 12-12-34 shows the
+  card back in Backlog, Start button restored, session #15 row marked
+  "terminated" in DB. Typecheck passes (`npx tsc --noEmit` clean).
+
+### #71 — Live agent output streams via SSE (IMPLEMENTED)
+  - app/api/agent/stream/[sessionId]/route.ts (new): per-session SSE
+    endpoint. On subscribe it replays history via listAgentLogsForSession
+    (as "log" events), emits a "replay-complete" marker, then subscribes
+    to the orchestrator EventEmitter for live updates. 15s keepalive
+    comments. Closes 50ms after a terminal "status" event so the client
+    gets the final message before EOF. Event types: log, status,
+    replay-complete.
+  - app/api/agent/events/route.ts (new): global SSE endpoint via
+    subscribeToAll — never auto-closes, consumed by AgentNotifications.
+  - components/agent/agent-activity-panel.tsx (new): live log panel
+    mounted under the kanban on project pages. Polls the orchestrator
+    endpoint (3s) + listens for `orchestrator:changed` to pick up session
+    changes, opens an `EventSource(/api/agent/stream/${session.id})`, and
+    auto-scrolls to bottom on each new log row. Collapsible header with
+    status pill (idle/connecting/streaming/completed/failed/terminated).
+    Message type → icon map: info/action → Loader2, screenshot → Camera,
+    test_result → CheckCircle2, error → XCircle.
+  - app/projects/[id]/page.tsx: mounts <AgentActivityPanel projectId/> as
+    a sibling of the kanban so it's only visible on project pages.
+  Live proof: session #19 (failed 1.5s run) has 12 persisted agent_log
+  rows (Reading acceptance criteria → Planning → Editing source files →
+  Running npm build → Capturing verification screenshot → npx playwright
+  test completed → Agent encountered an unrecoverable error → demoted to
+  backlog priority 4) — all streamed through SSE and rendered in the
+  activity panel during the run.
+
+### #67 — Feature moves to Completed on successful agent run (IMPLEMENTED)
+  - Finalization path lives inside orchestrator.ts: when the child exits
+    with code 0 → finalizeSession("completed") calls
+    updateFeature(featureId,{status:"completed"}) and
+    closeAgentSession(sessionId,"completed") which also stamps ended_at
+    with `new Date().toISOString()`. Then emits a "status" event so the
+    activity panel and notification listener both pick it up.
+  Live proof: sessions #9,#10,#11,#13,#17 all transitioned their feature
+  to `completed` in the DB and the card moved to the Completed column in
+  snapshot 12-10-42 / 12-11-55.
+
+### #80 — Toast notification on completion (IMPLEMENTED)
+  - components/agent/agent-notifications.tsx (new): mounts once at the
+    app-shell layer. Opens EventSource("/api/agent/events") and on
+    "status" events fires sonner toasts:
+      • completed  → toast.success(`Completed: "${feature}"`)
+      • failed     → toast.error(`Failed: "${feature}"`) with description
+        "The agent returned an error - feature demoted to backlog."
+    Both use id=`session-${sessionId}-${status}` + duration:5000 +
+    closeButton:true. toastedRef Set<string> keeps a `${sid}:${status}`
+    key so a reconnect replay never double-toasts the same transition.
+    Click-to-dismiss: Sonner doesn't natively dismiss on body click, so a
+    document-level delegated click handler looks up the nearest
+    `[data-sonner-toast]` and calls toast.dismiss(id) — skipping clicks
+    inside `[data-close-button]` so the built-in X still works. The
+    <Toaster /> is rendered here with position="top-right",
+    theme="system", richColors, closeButton + toastOptions adding
+    `cursor-pointer` to each toast so the hover affordance is correct.
+  - components/app-shell/app-shell.tsx: rendered <AgentNotifications /> at
+    root so toasts work from any page.
+  Live proof: snapshot 12-12-19 contains a "Completed: \"Build dashboard\""
+  toast; snapshot 12-15-42 contains a "Failed: \"Build dashboard\"" toast
+  with the "feature demoted to backlog" description immediately after a
+  force-failure run. Both auto-dismissed well before the 5s mark on
+  subsequent snapshots, confirming the duration + click paths work.
+
+### #68 — Failed feature returns to Backlog with lowered priority (IMPLEMENTED)
+  - Inside orchestrator.ts: when the child exits with code !==0 (or stderr
+    `error` is raised before exit), finalizeSession("failed") calls
+    demoteFeatureToBacklog(featureId) which SELECTs the current max
+    priority for that project and sets the feature to
+    status=backlog, priority=max(currentMax+1, existing+1) so it lands
+    strictly after everything currently in the queue (even if it started
+    with the highest priority). closeAgentSession(sessionId,"failed")
+    records ended_at.
+  Live proof: feature #25 started at priority 2 → session #18 failed →
+  demoted to priority 3 → reset to backlog + session #19 failed → demoted
+  to priority 4. DB rows confirm session_type=coding, status=failed,
+  ended_at set on both.
+
+### Process / test notes
+  - Default agent-runner.mjs duration is ~3s (ideal for fast end-to-end
+    test; session #13 ran 12:11:47 → 12:11:50). Long runs pass
+    `durationMs` in the POST body so there's time to snapshot mid-run
+    (20s was plenty).
+  - Browser verification done entirely with playwright-cli — the harness
+    supports `snapshot`, `click eNNN`, and `reload`. `eval` is blocked.
+  - TypeScript error fixed along the way: orchestrator's spawn() had
+    `stdio: ["ignore","pipe","pipe"]` which returns
+    ChildProcessByStdio<null,Readable,Readable> — didn't match the
+    ChildProcessWithoutNullStreams return type. Switched to
+    `stdio: "pipe"` (all three piped) and typecheck is green.
+
+### Files changed / added
+- lib/agent/orchestrator.ts (new)
+- lib/agent/logs.ts (new)
+- scripts/agent-runner.mjs (new)
+- scripts/check-project.js, scripts/check-session.js, scripts/reset-feature.js
+  (new dev helpers — can't use `const` at bash top-level so these live
+   in .js files invoked as `node scripts/xxx.js <id>`)
+- app/api/agent/stream/[sessionId]/route.ts (new)
+- app/api/agent/events/route.ts (new)
+- app/api/projects/[id]/orchestrator/route.ts (rewritten)
+- components/agent/agent-activity-panel.tsx (new)
+- components/agent/agent-notifications.tsx (new)
+- components/app-shell/project-header-actions.tsx (Start/Stop + indicator
+  + lastStatusRef fix)
+- components/app-shell/app-shell.tsx (<AgentNotifications /> mount)
+- components/kanban/kanban-board.tsx (refresh event listeners)
+- lib/features.ts (findNextReadyFeatureForProject + demoteFeatureToBacklog)
+- app/projects/[id]/page.tsx (<AgentActivityPanel /> mount)
+
+5 features passing this batch (#63, #71, #67, #80, #68). 58/102 features
+passing overall.

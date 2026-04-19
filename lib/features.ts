@@ -448,3 +448,101 @@ export function listProjectSiblings(featureId: number): FeatureRecord[] {
     )
     .all();
 }
+
+/* ---------------------- Orchestrator selection ---------------------- */
+
+/**
+ * Return the highest-priority backlog feature in a project whose dependencies
+ * are all completed. Returns null if nothing is ready. Used by the
+ * orchestrator (Feature #63) to pick the next work item.
+ *
+ * "Highest priority" here means the smallest priority integer - the kanban
+ * treats priority 0 as the top of the backlog, same as nextPriorityForProject
+ * which appends with `max+1`.
+ */
+export function findNextReadyFeatureForProject(
+  projectId: number,
+): FeatureRecord | null {
+  const backlog = db
+    .select()
+    .from(features)
+    .where(
+      and(eq(features.projectId, projectId), eq(features.status, "backlog")),
+    )
+    .all()
+    .sort((a, b) => {
+      if (a.priority !== b.priority) return a.priority - b.priority;
+      return a.id - b.id;
+    });
+
+  if (backlog.length === 0) return null;
+
+  // Build a set of completed feature ids for the project so dependency checks
+  // are O(1) per feature.
+  const completed = new Set(
+    db
+      .select({ id: features.id })
+      .from(features)
+      .where(
+        and(
+          eq(features.projectId, projectId),
+          eq(features.status, "completed"),
+        ),
+      )
+      .all()
+      .map((r) => r.id),
+  );
+
+  for (const feature of backlog) {
+    const deps = db
+      .select({ depId: featureDependencies.dependsOnFeatureId })
+      .from(featureDependencies)
+      .where(eq(featureDependencies.featureId, feature.id))
+      .all();
+    const allMet = deps.every((d) => completed.has(d.depId));
+    if (allMet) return feature;
+  }
+  return null;
+}
+
+/**
+ * Demote a feature back to the backlog after the agent failed on it
+ * (Feature #68). The feature's status is reset to "backlog" and its priority
+ * is bumped past the current max priority in the project so other backlog
+ * items are attempted first before the orchestrator retries.
+ *
+ * Returns the updated feature, or null if the feature doesn't exist.
+ */
+export function demoteFeatureToBacklog(
+  featureId: number,
+): FeatureRecord | null {
+  const existing = getFeature(featureId);
+  if (!existing) return null;
+
+  // Compute a new priority that sits strictly after every other feature in
+  // the project (including currently-completed ones so re-runs still land at
+  // the bottom).
+  const maxRow = db
+    .select({ priority: features.priority })
+    .from(features)
+    .where(eq(features.projectId, existing.projectId))
+    .all();
+  const currentMax = maxRow.reduce(
+    (acc, r) => (r.priority > acc ? r.priority : acc),
+    0,
+  );
+  const demotedPriority = Math.max(currentMax + 1, existing.priority + 1);
+
+  return (
+    db
+      .update(features)
+      .set({
+        status: "backlog",
+        priority: demotedPriority,
+        updatedAt: new Date().toISOString(),
+      })
+      .where(eq(features.id, featureId))
+      .returning()
+      .get() ?? null
+  );
+}

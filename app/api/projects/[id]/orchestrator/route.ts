@@ -1,10 +1,38 @@
 import { NextRequest, NextResponse } from "next/server";
 import {
-  closeAgentSession,
-  createAgentSession,
   getActiveSessionForProject,
 } from "@/lib/agent-sessions";
 import { getProject } from "@/lib/projects";
+import { getFeature } from "@/lib/features";
+import {
+  OrchestratorError,
+  isSessionRunning,
+  startOrchestrator,
+  stopOrchestratorSession,
+} from "@/lib/agent/orchestrator";
+
+/**
+ * Orchestrator REST endpoint for a project.
+ *
+ * GET   /api/projects/:id/orchestrator  → current active session (or null)
+ * POST  /api/projects/:id/orchestrator  → body { action?: "start" | "stop",
+ *                                                outcome?: "success" | "failure",
+ *                                                durationMs?: number }
+ *
+ * The POST action=start call picks the highest-priority ready feature,
+ * transitions it to in_progress, creates an agent_session row, and spawns a
+ * Node.js child process running the Claude Agent SDK runner (Feature #63).
+ * POST action=stop force-terminates that child process (Feature #73 /
+ * force-stop coverage).
+ *
+ * `outcome`/`durationMs` are test hooks used by features #67 & #68 to force
+ * success or failure paths without LM Studio. They default to success / a
+ * short runtime in production so real runs behave naturally.
+ *
+ * This route MUST run on the Node.js runtime (not edge) because spawning
+ * child processes and writing to SQLite are Node APIs.
+ */
+export const runtime = "nodejs";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -13,13 +41,6 @@ function parseId(idStr: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/**
- * GET /api/projects/:id/orchestrator
- *
- * Returns the currently-active (in_progress) coding orchestrator session
- * for a project, or `null` if none exists. The project header uses this
- * to determine whether to show "Start Orchestrator" or "Stop".
- */
 export async function GET(_req: NextRequest, ctx: RouteContext) {
   const { id } = await ctx.params;
   const projectId = parseId(id);
@@ -31,23 +52,11 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
   const session = getActiveSessionForProject(projectId, "coding");
-  return NextResponse.json({ session });
+  const running = session ? isSessionRunning(session.id) : false;
+  const feature = session?.featureId ? getFeature(session.featureId) : null;
+  return NextResponse.json({ session, running, feature });
 }
 
-/**
- * POST /api/projects/:id/orchestrator
- *
- * Body: { action?: "start" | "stop" }
- *
- * Starts a new coding agent_session for the project (idempotent - if one is
- * already in_progress it is returned as-is). When `action: "stop"` is
- * supplied, the active session is marked terminated.
- *
- * The Start Orchestrator button rendered in the project header (Feature
- * #62) hits this endpoint with `action: "start"`. Subsequent features
- * (orchestrator loop, agent SDK invocation, log streaming) will layer on
- * top of the row created here.
- */
 export async function POST(req: NextRequest, ctx: RouteContext) {
   const { id } = await ctx.params;
   const projectId = parseId(id);
@@ -59,31 +68,57 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  let action: "start" | "stop" = "start";
+  let body: {
+    action?: string;
+    outcome?: string;
+    durationMs?: number;
+  } = {};
   try {
-    const body = (await req.json().catch(() => ({}))) as { action?: string };
-    if (body.action === "stop") action = "stop";
+    body = (await req.json().catch(() => ({}))) as typeof body;
   } catch {
-    // body parse error — fall through with default action.
+    body = {};
   }
+
+  const action = body.action === "stop" ? "stop" : "start";
 
   if (action === "stop") {
     const existing = getActiveSessionForProject(projectId, "coding");
     if (!existing) {
       return NextResponse.json({ session: null, stopped: false });
     }
-    const closed = closeAgentSession(existing.id, "terminated");
-    return NextResponse.json({ session: closed, stopped: true });
+    const result = stopOrchestratorSession(existing.id);
+    return NextResponse.json({
+      session: result.session,
+      stopped: result.stopped,
+    });
   }
 
-  // start
-  const existing = getActiveSessionForProject(projectId, "coding");
-  if (existing) {
-    return NextResponse.json({ session: existing, started: false });
+  // action === "start"
+  try {
+    const outcome =
+      body.outcome === "failure" ? "failure" : "success";
+    const durationMs =
+      typeof body.durationMs === "number" && body.durationMs > 0
+        ? body.durationMs
+        : undefined;
+
+    const result = startOrchestrator(projectId, { outcome, durationMs });
+    return NextResponse.json(
+      {
+        session: result.session,
+        feature: result.feature,
+        started: result.started,
+      },
+      { status: result.started ? 201 : 200 },
+    );
+  } catch (err) {
+    if (err instanceof OrchestratorError) {
+      return NextResponse.json(
+        { error: err.message },
+        { status: err.status },
+      );
+    }
+    const message = err instanceof Error ? err.message : "Unknown error";
+    return NextResponse.json({ error: message }, { status: 500 });
   }
-  const session = createAgentSession({
-    projectId,
-    sessionType: "coding",
-  });
-  return NextResponse.json({ session, started: true }, { status: 201 });
 }

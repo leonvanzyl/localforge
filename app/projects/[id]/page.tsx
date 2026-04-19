@@ -5,6 +5,7 @@ import { getActiveSessionForProject } from "@/lib/agent-sessions";
 import { KanbanBoard } from "@/components/kanban/kanban-board";
 import { ProjectHeaderActions } from "@/components/app-shell/project-header-actions";
 import { BootstrapperPanel } from "@/components/bootstrapper/bootstrapper-panel";
+import { AgentActivityPanel } from "@/components/agent/agent-activity-panel";
 
 export const dynamic = "force-dynamic";
 
@@ -73,15 +74,18 @@ export default async function ProjectPage({ params }: PageProps) {
       </header>
 
       <div className="flex flex-1 flex-col overflow-hidden">
-        {bootstrapperSession ? (
-          <BootstrapperPanel
-            sessionId={bootstrapperSession.id}
-            projectId={project.id}
-            projectName={project.name}
-          />
-        ) : (
-          <KanbanBoard projectId={project.id} />
-        )}
+        <div className="flex flex-1 flex-col overflow-hidden">
+          {bootstrapperSession ? (
+            <BootstrapperPanel
+              sessionId={bootstrapperSession.id}
+              projectId={project.id}
+              projectName={project.name}
+            />
+          ) : (
+            <KanbanBoard projectId={project.id} />
+          )}
+        </div>
+        <AgentActivityPanel projectId={project.id} />
       </div>
     </div>
   );

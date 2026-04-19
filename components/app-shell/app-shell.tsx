@@ -5,6 +5,7 @@ import type { ReactNode } from "react";
 import { NewProjectDialog } from "./new-project-dialog";
 import { ShellProvider } from "./shell-context";
 import { Sidebar } from "./sidebar";
+import { AgentNotifications } from "@/components/agent/agent-notifications";
 
 /**
  * Top-level application chrome: sidebar on the left, main content on the
@@ -32,6 +33,7 @@ export function AppShell({ children }: { children: ReactNode }) {
         </main>
       </div>
       <NewProjectDialog />
+      <AgentNotifications />
     </ShellProvider>
   );
 }

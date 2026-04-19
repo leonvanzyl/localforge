@@ -85,6 +85,21 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
     void load();
   }, [load]);
 
+  // Reload whenever the orchestrator (or another action) flips feature
+  // status - e.g. start/stop buttons, agent completion events. Anyone can
+  // dispatch `kanban:refresh` to ask this board to re-query the API.
+  React.useEffect(() => {
+    const onRefresh = () => {
+      void load();
+    };
+    window.addEventListener("kanban:refresh", onRefresh);
+    window.addEventListener("orchestrator:changed", onRefresh);
+    return () => {
+      window.removeEventListener("kanban:refresh", onRefresh);
+      window.removeEventListener("orchestrator:changed", onRefresh);
+    };
+  }, [load]);
+
   if (state.kind === "loading") {
     return (
       <div
