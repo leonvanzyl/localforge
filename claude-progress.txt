@@ -97,3 +97,52 @@ No code changes required - existing lib/db/index.ts + drizzle.config.ts +
 init.sh already satisfy this feature. Marked #10 passing.
 
 6/86 features passing after this session.
+
+## Session 3 (2026-04-19) - Feature #9
+
+### Completed: Feature #9 Tailwind CSS and shadcn styles applied
+
+Changes:
+  - Added components/ui/button.tsx - canonical shadcn/ui Button component
+    with cva-based variants (default, destructive, outline, secondary,
+    ghost, link) and sizes (default, sm, lg, icon). Uses `cn()` from
+    lib/utils.ts and references the hsl(var(--*)) CSS variables already
+    defined in app/globals.css, so it works in both dark and light mode.
+  - Updated app/page.tsx to use three Button variants (default /
+    secondary / outline) so the home page exercises shadcn/ui styling.
+    (The app-shell layout created in the earlier session wraps this
+    page — home content appears inside main, next to the sidebar.)
+  - NOTE: app/page.tsx was also touched by the app-shell work in
+    parallel (wrapping buttons in Next.js Link components + adding
+    Sparkles/FolderPlus lucide icons). That is compatible and has been
+    preserved.
+
+Verification performed (all 6 spec steps):
+  1. ✅ Navigated to http://localhost:3000/ via playwright-cli - HTTP
+     200, title "LocalForge".
+  2. ✅ Inspected button DOM via snapshot + rendered-HTML fetch. Three
+     buttons render with data-testid primary-button / secondary-button /
+     outline-button.
+  3. ✅ Primary button has Tailwind utility classes applied:
+     inline-flex items-center justify-center gap-2 whitespace-nowrap
+     rounded-md text-sm font-medium transition-colors
+     focus-visible:outline-none focus-visible:ring-2
+     focus-visible:ring-ring focus-visible:ring-offset-2
+     disabled:pointer-events-none disabled:opacity-50 bg-primary
+     text-primary-foreground hover:bg-primary/90 shadow-sm h-10 px-4 py-2.
+  4. ✅ Computed styles reflect Tailwind (not browser defaults) -
+     screenshot shows dark bg (hsl(240 10% 3.9%)), blue primary button
+     (hsl(217 91% 60%)), rounded corners, card shadow, muted text. A
+     stock <button> would be gray+flat; these are custom.
+  5. ✅ shadcn/ui Button renders with signature styling across three
+     variants (solid primary, gray secondary, transparent outline with
+     border) - see screenshot.
+  6. ✅ Screenshot captured:
+     .playwright-cli/page-2026-04-19T11-32-23-607Z.png.
+
+Console check: 0 errors, 0 warnings.
+
+Mock-data scan (STEP 5.6) of components/ui: clean (no hits).
+
+7/86 features passing after this session. Next agent can pick up the
+next highest-priority feature in the style/UI category.
