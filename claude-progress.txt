@@ -820,3 +820,102 @@ lib/db/index.ts:17 ("never in-memory or globalThis-based storage") - clean.
     no CRUD paths touched.
 
 28/86 features passing after this session.
+
+## Session 10 (2026-04-19) - Batch: #22, #23, #25, #55, #24
+
+Five project-lifecycle features delivered end-to-end.
+
+### Feature #22 - Project folder created on disk
+- lib/projects.ts createProject() slugifies the name, picks a unique
+  folder under getWorkingDirectory(), mkdir -p's it, and rolls back the
+  folder on DB-write failure. Collision suffix (-2, -3) verified via
+  duplicate "VALIDATION_TEST_UNIQUE" submissions producing
+  validation-test-unique, -2, -3.
+- Verified: Every new project row has matching folder on disk.
+
+### Feature #23 - .claude/settings.json generated for new project
+- writeClaudeSettings() writes {env: {ANTHROPIC_BASE_URL}, model} JSON
+  into <folder>/.claude/settings.json on creation. Defaults come from
+  settings table (keys lm_studio_url, model) or the MVP fallbacks
+  http://127.0.0.1:1234 / google/gemma-4-31b.
+- Another agent later layered writeProjectClaudeSettings() on top so
+  per-project overrides stay in sync after saves; my initial-create
+  path is unchanged.
+
+### Feature #25 - Delete project with confirmation dialog
+### New file
+- components/app-shell/delete-project-dialog.tsx: confirm dialog with
+  "Also remove project folder from disk" checkbox, POSTs
+  DELETE /api/projects/:id?removeFiles=true|false, refreshes sidebar
+  via useShell, and navigates home on success.
+- components/app-shell/project-header-actions.tsx: wraps the Delete
+  trigger + dialog. (Later enhanced by another agent with the
+  Start Orchestrator CTA - preserved.)
+- Verified: soft-delete leaves folder, hard-delete (checkbox) removes
+  folder via fs.rmSync recursive.
+
+### Feature #55 - AI bootstrapper conversation creates session
+### New files
+- app/api/projects/[id]/bootstrapper-session/route.ts
+  GET returns active session; POST creates one idempotently
+  (returns existing in_progress bootstrapper session if found).
+- app/api/agent-sessions/[id]/messages/route.ts
+  GET lists messages; POST appends user+placeholder-assistant pair.
+- lib/agent-sessions.ts: createAgentSession,
+  getActiveSessionForProject, appendChatMessage, listChatMessages.
+- components/bootstrapper/bootstrapper-panel.tsx: chat UI with
+  optimistic user echo, greeting empty-state, textarea + Send.
+- new-project-dialog.tsx: mode selector (blank vs AI). When "AI" is
+  selected, after project creation we POST to bootstrapper-session
+  so the project page opens directly in chat mode.
+- app/projects/[id]/page.tsx: checks for active bootstrapper session
+  and renders BootstrapperPanel in place of KanbanBoard.
+- Verified: creating a project with "Describe your project to AI"
+  navigates straight into the chat with greeting visible and send
+  button disabled on empty input.
+
+### Feature #24 - Project creation form validation
+### Edits
+- lib/projects.ts: exported MAX_PROJECT_NAME_LENGTH=120 and
+  ProjectValidationError class. createProject throws for empty,
+  whitespace-only, or >120-char names.
+- app/api/projects/route.ts: catches ProjectValidationError and
+  returns 400 with the human-readable message (anything else still
+  gets a 500).
+- components/app-shell/new-project-dialog.tsx: mirrors the constant,
+  adds a client-side length guard for pasted-over-maxLength input,
+  swaps the native `required` for aria-invalid/aria-describedby so
+  the submit button is always clickable (users need to SEE "Project
+  name is required", not stare at a dead button).
+
+### Verification (all 5 scenarios)
+
+    empty name       -> client shows "Project name is required";
+                         server POST {"name":""} -> 400 same message
+    whitespace only  -> client shows "Project name is required";
+                         server POST {"name":"   "} -> 400 same message
+    300+ char name   -> maxLength caps typing at 120 (acceptable
+                         truncation behavior per the spec);
+                         server POST with 300 'A's -> 400 "Project
+                         name must be 120 characters or fewer"
+    duplicate name   -> accepted (display name can repeat), folder
+                         slug disambiguated (validation-test-unique,
+                         -2, -3), navigation to new project succeeds
+    valid unique     -> created at /projects/25, kanban opens
+
+Console check: 0 errors, 0 warnings across the full flow
+(see .playwright-cli/console-2026-04-19T11-56-09-310Z.log).
+
+### Notes for next agent
+
+- Duplicate display names are allowed by design; uniqueness lives
+  at the folder slug. If a later feature requires unique names at
+  the row level, add a UNIQUE constraint to projects.name and a
+  friendlier message in createProject.
+- Another agent is shipping per-project settings (lib/settings.ts,
+  app/api/projects/[id]/settings/, project-settings-dialog.tsx,
+  writeProjectClaudeSettings in lib/projects.ts). Those were in
+  the working tree but left unstaged - not my features to commit.
+
+5 features passing this batch. 46/102 features passing overall (other
+agents added features + completed more in parallel during this batch).
