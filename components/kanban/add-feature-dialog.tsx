@@ -52,6 +52,7 @@ export function AddFeatureDialog({
   const [submitting, setSubmitting] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
   const [fieldError, setFieldError] = React.useState<string | null>(null);
+  const [titleTouched, setTitleTouched] = React.useState(false);
   const inputRef = React.useRef<HTMLInputElement>(null);
 
   // Reset state when dialog opens.
@@ -63,6 +64,7 @@ export function AddFeatureDialog({
       setPriority("");
       setError(null);
       setFieldError(null);
+      setTitleTouched(false);
       setSubmitting(false);
       queueMicrotask(() => inputRef.current?.focus());
     }
@@ -169,22 +171,29 @@ export function AddFeatureDialog({
                 if (fieldError) setFieldError(null);
                 if (error) setError(null);
               }}
+              onBlur={() => setTitleTouched(true)}
               disabled={submitting}
               autoComplete="off"
               maxLength={TITLE_MAX}
-              aria-invalid={fieldError ? "true" : "false"}
+              aria-invalid={
+                fieldError || (titleTouched && title.trim().length === 0)
+                  ? "true"
+                  : "false"
+              }
               aria-describedby={
-                fieldError ? "add-feature-field-error" : undefined
+                fieldError || (titleTouched && title.trim().length === 0)
+                  ? "add-feature-field-error"
+                  : undefined
               }
             />
-            {fieldError && (
+            {(fieldError || (titleTouched && title.trim().length === 0)) && (
               <p
                 id="add-feature-field-error"
                 role="alert"
                 data-testid="add-feature-field-error"
                 className="text-xs text-destructive"
               >
-                {fieldError}
+                {fieldError ?? "Title is required"}
               </p>
             )}
           </div>

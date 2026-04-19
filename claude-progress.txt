@@ -919,3 +919,107 @@ Console check: 0 errors, 0 warnings across the full flow
 
 5 features passing this batch. 46/102 features passing overall (other
 agents added features + completed more in parallel during this batch).
+
+## Session 11 (2026-04-19) - Batch: #40, #41, #42, #43, #49
+
+Five kanban feature-management features delivered end-to-end. Built the
+feature CRUD + dependency surface from scratch (no pre-existing code on
+the feature-management side).
+
+### Feature #40 - Add feature via form/modal
+
+### New files
+- lib/features.ts: core feature domain (later extended by another
+  agent with findNextReadyFeatureForProject + demoteFeatureToBacklog
+  for the orchestrator - preserved). My portions: FeatureValidationError
+  class with .status, validateTitle (trim+reject empty, MAX_TITLE=200),
+  createFeature (auto-picks priority = max+1 when unspecified),
+  updateFeature, deleteFeature, listFeaturesForProject, and the
+  dependency helpers (add/remove/set/list/count + wouldCreateCycle BFS).
+- app/api/projects/[id]/features/route.ts: GET list with
+  dependencyCount per row, POST create. Wraps validation errors to
+  400 JSON with the message.
+- app/api/features/[id]/route.ts: GET/PATCH/DELETE for single feature.
+  Only sends the fields the client supplied.
+- app/api/features/[id]/dependencies/route.ts: GET/POST/DELETE.
+  POST accepts {dependsOnFeatureId} for single-add or
+  {dependsOn: number[]} for bulk replace via setDependencies.
+- components/kanban/feature-card.tsx: P-badge (P0, P1 colored by
+  category), dependency indicator (amber Link2 + count) when deps > 0.
+  Dual-mode: renders as <button> with onOpen or static <article>.
+- components/kanban/add-feature-dialog.tsx: title (required, max 200),
+  description, acceptanceCriteria, optional priority.
+- components/kanban/feature-detail-dialog.tsx: title/description/
+  acceptanceCriteria editing, status select, dependency multi-pick
+  with chip-style removal.
+
+### Edits
+- components/kanban/kanban-column.tsx: + Add Feature button next to
+  count badge. aria-label "Add feature to {title}" for screen readers.
+- components/kanban/kanban-board.tsx: addDialogStatus + detailFeatureId
+  state; wraps board with both dialogs; refetches features on
+  create/save.
+
+Verified (project DEP_TEST_49 id=23): "+ Add Feature" opens dialog,
+submitting "FEATURE_A" persists, POST /api/projects/23/features
+returns 200 with feature row, card appears in Backlog column.
+
+### Feature #41 - Add feature form validation
+
+Submit button disabled on empty/whitespace-only title; submit attempt
+with empty shows "Title is required" alert (role="alert"). Added
+titleTouched state so blur-without-type also surfaces the message
+(the disabled-button-without-error UX from the first pass was
+unclear). Description + title both maxLength-capped at the input
+level; server-side length validation in validateTitle catches
+whitespace-only as an empty-after-trim case.
+
+### Feature #42 - Edit feature title via detail modal
+
+Clicked FEATURE_B card on DEP_TEST_49 board, modal opened with title
+pre-populated, changed to "EDITED_TITLE_42", Save Changes fires
+PATCH /api/features/{id} with {title: "EDITED_TITLE_42"}, card
+re-renders with new title, server restart persists.
+
+### Feature #43 - Edit feature description
+
+Same flow as #42 but on the description textarea. PATCH sends only
+the changed field. Verified description persisted across a detail
+dialog reopen.
+
+### Feature #49 - Add dependency between features
+
+Opened FEATURE_B detail, dependency picker shows sibling #20
+FEATURE_A (self is filtered out), clicked Add, chip appears in the
+dependency list, Save Changes POSTs {dependsOn: [20]}, and the
+amber Link2 indicator with "1" renders on FEATURE_B's card. DB:
+one feature_dependencies row (feature_id=21, depends_on=20).
+Cycle detection exercised by attempting FEATURE_A dep-on-FEATURE_B
+after the above - API returned 400 "would create a cycle".
+
+### Mock-data scan (STEP 5.6)
+
+grep in app|lib|components for globalThis|devStore|dev-store|mockDb|
+mockData|fakeData|sampleData|dummyData|TODO.*real|TODO.*database|
+STUB|MOCK|isDevelopment: only hit remains lib/db/index.ts:17 doc
+comment about "never in-memory or globalThis-based storage" - clean.
+
+### Console check
+
+0 errors, 0 warnings across create/edit/dependency flows.
+
+### Notes for next agent
+
+- The orchestrator helpers (findNextReadyFeatureForProject +
+  demoteFeatureToBacklog) appended to lib/features.ts by a
+  concurrent agent are unrelated to this batch - they support
+  features #63/#68. Left unstaged, same pattern as session 10.
+- FeatureDetailDialog uses parallel fetches for feature + deps;
+  if dependency lists grow large, consider moving the sibling
+  list behind a search/filter rather than a single <select>.
+- API 404s vs. 400s: FeatureValidationError carries .status so
+  route handlers can translate "not found" properly; use the same
+  pattern for future resources.
+
+5 features passing this batch (#40, #41, #42, #43, #49).
+48/102 features passing overall.
