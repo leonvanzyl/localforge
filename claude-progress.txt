@@ -1978,3 +1978,113 @@ failure runs.
 3 features passing this session (#52, #72, #73). 85/102 features
 passing overall.
 
+## Session 16 (2026-04-19, later)
+
+Batched: #96, #82, #83.
+
+### Feature #96 - E2E tests with pass/fail card badge
+
+The agent-runner.mjs already writes `test_result` rows into agent_logs
+whenever `npx playwright test` finishes (log line format:
+"npx playwright test completed: N passed, M failed (Xms)"). Surfaced
+those rows to the kanban card by parsing the message in
+lib/agent/logs.ts and joining the results into the GET
+/api/projects/:id/features response.
+
+- lib/agent/logs.ts: added parseTestResultMessage() regex + two new
+  helpers getLatestTestResultsForFeatures / -forProject returning a
+  FeatureTestResult {passed, failed, durationMs, recordedAt} map
+  keyed by feature id. Uses the most recent test_result log row per
+  feature.
+- app/api/projects/[id]/features/route.ts: attaches
+  testResult: testResults.get(f.id) ?? null on each feature item.
+- components/kanban/feature-card.tsx: renders a
+  data-testid="feature-card-test-result-${id}" badge with
+  data-test-ok / data-tests-passed / data-tests-failed attributes so
+  Playwright specs can assert without parsing CSS. Green
+  CheckCircle2 + "1/1" text for all-pass, red XCircle + "0/1" text
+  for any failures.
+- components/kanban/feature-detail-dialog.tsx: bugfix — screenshot
+  URLs were being built as `/api/screenshots/${log.screenshotPath}`
+  which produced `/api/screenshots/screenshots/foo.png` because
+  screenshotPath already includes the `screenshots/` prefix. Now
+  routes through resolveScreenshotUrl() which strips the duplicate
+  prefix. Fixes silent 404s in the feature detail modal.
+- tests/feat96-card-badge.spec.ts: NEW spec asserting badge on cards
+  #37 and #48 in project 31 (both have test_result logs from prior
+  orchestrator runs).
+- tests/feat96-dialog-screenshot.spec.ts: NEW spec opening the
+  feature #48 detail modal and asserting the inline screenshot
+  `<img>` loads successfully (naturalWidth > 0).
+
+### Feature #82 - Browser push notification on completion
+
+Extended components/agent/agent-notifications.tsx to fire a Web
+Notifications API notification when an SSE `status:completed` event
+arrives AND the user has granted permission.
+
+- readPermission() helper + NotificationPermissionState type
+  (granted/denied/default/unsupported). Hydrates after mount so SSR
+  doesn't touch window.Notification.
+- fireBrowserNotification() short-circuits on unsupported /
+  non-granted. Constructs `new Notification("LocalForge", {body: ...,
+  tag: "localforge-feature-completed", renotify: false})` with the
+  feature name in the body. Wrapped in try/catch so a permission
+  change between check and construction doesn't break the toast
+  path.
+- NotificationControls sub-component renders a fixed
+  bottom-right cluster with a Bell/BellRing/BellOff icon showing the
+  current permission state. Click-to-request flow uses
+  Notification.requestPermission(). Shows an inline error banner
+  when the user declines or the browser doesn't support the API.
+- data-testid hooks: notification-controls,
+  notification-permission-button, data-notification-permission
+  attribute (exposes state for tests).
+
+### Feature #83 - Notification sound on completion
+
+Same file as #82. Uses Web Audio API.
+
+- playCompletionSound() lazily creates a module-level shared
+  AudioContext (some browsers require a user gesture before one can
+  produce output; deferring creation until the first event lets the
+  "Start Orchestrator" click unlock playback). Two-tone E5 → A5 beep
+  (659.25Hz / 880Hz), 220ms total, max gain 0.15 (modest volume,
+  exponentially ramped so it doesn't click). All paths wrapped in
+  try/catch — if Ctx / webkitAudioContext is missing the function
+  simply returns, no throw.
+- Mute toggle in NotificationControls (Volume2 / VolumeX icons) with
+  a data-testid="notification-sound-toggle" hook. Persists to
+  localStorage under key "localforge.notifications.sound.muted".
+- soundMutedRef pattern: the SSE handler reads from a ref so the
+  subscription doesn't resubscribe every time the user toggles mute.
+
+### Verification
+
+- tests/feat82-83-notifications.spec.ts: NEW Playwright spec with 4
+  test cases. Uses addInitScript to stub Notification / AudioContext
+  / EventSource before the page loads, then dispatches synthetic
+  status:completed events via an exposed window.__fireStatus()
+  helper. Covers: granted+sound-on, denied, mute persists across
+  reload, unsupported-AudioContext-doesn't-throw.
+
+All 14 project Playwright tests pass.
+
+### Files changed / added
+
+- lib/agent/logs.ts: parseTestResultMessage + getLatestTestResults*
+  helpers (#96)
+- app/api/projects/[id]/features/route.ts: attach testResult to each
+  feature (#96)
+- components/kanban/feature-card.tsx: pass/fail badge with test
+  hooks (#96)
+- components/kanban/feature-detail-dialog.tsx: screenshot URL
+  resolver fix (#96)
+- components/agent/agent-notifications.tsx: Web Notifications API +
+  Web Audio API + NotificationControls cluster (#82 / #83)
+- tests/feat96-card-badge.spec.ts: NEW (#96)
+- tests/feat96-dialog-screenshot.spec.ts: NEW (#96)
+- tests/feat82-83-notifications.spec.ts: NEW (#82 / #83)
+
+3 features passing this session (#96, #82, #83). 88/102 features
+passing overall.
