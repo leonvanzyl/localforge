@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, Link2, X as XIcon } from "lucide-react";
+import { Loader2, Link2, TerminalSquare, X as XIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -19,6 +19,48 @@ const TITLE_MAX = 200;
 const DESC_MAX = 5000;
 
 type DetailFeature = FeatureCardData;
+
+type AgentLogEntry = {
+  id: number;
+  sessionId: number;
+  featureId: number | null;
+  message: string;
+  messageType: "info" | "action" | "error" | "screenshot" | "test_result";
+  screenshotPath: string | null;
+  createdAt: string;
+};
+
+function logBadgeClass(mt: AgentLogEntry["messageType"]) {
+  switch (mt) {
+    case "action":
+      return "border border-blue-500/40 bg-blue-500/10 text-blue-400";
+    case "error":
+      return "border border-destructive/40 bg-destructive/10 text-destructive";
+    case "screenshot":
+      return "border border-fuchsia-500/40 bg-fuchsia-500/10 text-fuchsia-400";
+    case "test_result":
+      return "border border-emerald-500/40 bg-emerald-500/10 text-emerald-400";
+    case "info":
+    default:
+      return "border border-border bg-muted text-muted-foreground";
+  }
+}
+
+function formatLogTime(iso: string): string {
+  // Logs come back as either ISO or SQLite `YYYY-MM-DD HH:MM:SS`. Normalize
+  // the SQLite variant by swapping the space for a T so Date.parse works
+  // cross-browser, then render local time.
+  const normalized = /^\d{4}-\d{2}-\d{2} /.test(iso)
+    ? `${iso.replace(" ", "T")}Z`
+    : iso;
+  const d = new Date(normalized);
+  if (Number.isNaN(d.getTime())) return iso;
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
+  });
+}
 
 /**
  * Modal for viewing and editing a single feature.
@@ -64,12 +106,19 @@ export function FeatureDetailDialog({
   const [fieldError, setFieldError] = React.useState<string | null>(null);
   const [depPick, setDepPick] = React.useState<string>("");
 
+  const [logs, setLogs] = React.useState<AgentLogEntry[]>([]);
+  const [logsLoading, setLogsLoading] = React.useState(false);
+  const [logsError, setLogsError] = React.useState<string | null>(null);
+
   React.useEffect(() => {
     if (!open || featureId == null) return;
     let cancelled = false;
     setLoading(true);
     setError(null);
     setFieldError(null);
+    setLogs([]);
+    setLogsError(null);
+    setLogsLoading(true);
 
     async function load(id: number) {
       try {
@@ -106,7 +155,30 @@ export function FeatureDetailDialog({
         if (!cancelled) setLoading(false);
       }
     }
+    async function loadLogs(id: number) {
+      try {
+        const res = await fetch(`/api/features/${id}/logs`, {
+          cache: "no-store",
+        });
+        if (!res.ok) {
+          throw new Error(`Failed to load logs (${res.status})`);
+        }
+        const data = (await res.json()) as { logs: AgentLogEntry[] };
+        if (cancelled) return;
+        setLogs(data.logs ?? []);
+      } catch (err) {
+        if (!cancelled) {
+          setLogsError(
+            err instanceof Error ? err.message : "Failed to load logs",
+          );
+        }
+      } finally {
+        if (!cancelled) setLogsLoading(false);
+      }
+    }
+
     load(featureId);
+    loadLogs(featureId);
     return () => {
       cancelled = true;
     };
@@ -425,6 +497,84 @@ export function FeatureDetailDialog({
                       >
                         Add
                       </Button>
+                    </div>
+                  )}
+                </div>
+
+                <div
+                  className="space-y-2"
+                  data-testid="feature-detail-logs-section"
+                >
+                  <label className="flex items-center gap-1 text-sm font-medium text-foreground">
+                    <TerminalSquare
+                      className="h-3.5 w-3.5"
+                      aria-hidden="true"
+                    />
+                    Agent activity
+                  </label>
+                  <p className="text-xs text-muted-foreground">
+                    Messages captured during coding-agent sessions that worked
+                    on this feature. Logs persist across sessions and server
+                    restarts.
+                  </p>
+
+                  {logsLoading && (
+                    <p
+                      data-testid="feature-detail-logs-loading"
+                      className="text-xs text-muted-foreground"
+                    >
+                      Loading logs…
+                    </p>
+                  )}
+
+                  {logsError && (
+                    <p
+                      role="alert"
+                      data-testid="feature-detail-logs-error"
+                      className="text-xs text-destructive"
+                    >
+                      {logsError}
+                    </p>
+                  )}
+
+                  {!logsLoading && !logsError && logs.length === 0 && (
+                    <p
+                      data-testid="feature-detail-logs-empty"
+                      className="text-xs text-muted-foreground"
+                    >
+                      No agent activity recorded yet.
+                    </p>
+                  )}
+
+                  {!logsLoading && !logsError && logs.length > 0 && (
+                    <div
+                      data-testid="feature-detail-logs-list"
+                      className="max-h-64 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed"
+                    >
+                      <ul className="space-y-1">
+                        {logs.map((log) => (
+                          <li
+                            key={log.id}
+                            data-testid={`feature-detail-log-${log.id}`}
+                            data-message-type={log.messageType}
+                            className="flex items-start gap-2"
+                          >
+                            <span className="shrink-0 text-muted-foreground">
+                              {formatLogTime(log.createdAt)}
+                            </span>
+                            <span
+                              className={`shrink-0 rounded px-1.5 py-0 text-[10px] uppercase ${logBadgeClass(
+                                log.messageType,
+                              )}`}
+                            >
+                              {log.messageType}
+                            </span>
+                            <span className="break-words text-foreground">
+                              {log.message}
+                            </span>
+                          </li>
+                        ))}
+                      </ul>
                     </div>
                   )}
                 </div>
