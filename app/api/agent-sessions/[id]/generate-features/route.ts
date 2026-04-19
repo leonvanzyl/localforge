@@ -1,16 +1,22 @@
 import { NextRequest, NextResponse } from "next/server";
+import { query } from "@anthropic-ai/claude-agent-sdk";
 import {
   closeAgentSession,
   getAgentSession,
   listChatMessages,
 } from "@/lib/agent-sessions";
-import { createFeature } from "@/lib/features";
 import {
-  chatCompletion,
-  LMStudioUnavailableError,
-  type LMStudioChatMessage,
-} from "@/lib/agent/lm-studio";
-import { getGlobalSettings } from "@/lib/settings";
+  buildFeatureCrudMcpServer,
+  FEATURE_CRUD_TOOL_NAMES,
+} from "@/lib/agent/feature-crud-mcp";
+import { listFeaturesForProject } from "@/lib/features";
+import { getProject } from "@/lib/projects";
+import { getProjectEffectiveSettings } from "@/lib/settings";
+
+export const runtime = "nodejs";
+// Feature generation against a local model can take minutes; extend
+// Next.js's per-request timeout so the agent has room to finish.
+export const maxDuration = 600;
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -19,62 +25,53 @@ function parseId(idStr: string): number | null {
   return Number.isFinite(n) && n > 0 ? n : null;
 }
 
-/**
- * Prompt the model to emit a STRICT JSON object with a `features` array so we
- * can parse it reliably. We keep the schema tight: title, description,
- * category, plus an optional dependency list by 1-based index.
- */
-const FEATURE_GEN_SYSTEM = `You are LocalForge's feature generator. Given a
-user/assistant chat describing an app, produce a JSON object describing the
-work needed to build it.
+const FEATURE_GEN_SYSTEM_PROMPT = `You are LocalForge's feature-generation agent.
 
-Output ONLY valid JSON (no prose, no markdown fences) of the form:
-{
-  "features": [
-    {
-      "title": "Short imperative title",
-      "description": "One paragraph describing what the feature must do.",
-      "category": "functional" | "style",
-      "depends_on": [1, 2]   // OPTIONAL list of 1-based indices of earlier features this depends on
-    }
-  ]
-}
+You are given a user/assistant chat describing an app the user wants to build.
+Your job is to turn that conversation into a complete backlog of 6-15 features
+by calling the MCP tools exposed under the "feature-crud" server. You have
+NO access to files, bash, or the user. Every change must go through a tool.
 
-Generate between 6 and 15 features covering the most important work. The
-first features should be foundational (infrastructure, schema, basic UI)
-and later features should build on them. Every "depends_on" index MUST
-reference an EARLIER feature in the same array. Titles MUST be under 100
-characters. Return the JSON and nothing else.`;
+Workflow:
+1. Call list_features to see what (if anything) is already in the backlog.
+2. Plan the build in dependency order: foundational work first (SQLite
+   schema / migrations, basic app shell, core data model), then behaviour,
+   then polish.
+3. Call create_feature for each item, in order. Pass depends_on with the
+   ids of earlier features that must complete first (from step 1 or from
+   earlier create_feature responses). Depends_on must ONLY reference
+   features that already exist.
+4. Make sure the backlog contains at least one feature for the kanban /
+   board UI and at least one feature for SQLite persistence — the build
+   pipeline relies on both.
+5. When you are done creating features, STOP calling tools and reply with
+   a single short sentence summarising how many features you created.
 
-type RawFeature = {
-  title?: unknown;
-  description?: unknown;
-  category?: unknown;
-  depends_on?: unknown;
-};
+Rules for each feature:
+- Title: short imperative sentence under 100 characters.
+- Description: one paragraph describing what "done" looks like, in plain
+  English.
+- Category: "functional" for behaviour/logic, "style" for purely visual
+  polish. Default to "functional" when unsure.
 
-/**
- * Pull the first JSON object out of a string. Handles models that sometimes
- * wrap their output in ```json fences or chat pre-amble.
- */
-function extractJson(text: string): string | null {
-  const fenceMatch = text.match(/```(?:json)?\s*([\s\S]*?)```/i);
-  if (fenceMatch) return fenceMatch[1].trim();
-  const first = text.indexOf("{");
-  const last = text.lastIndexOf("}");
-  if (first === -1 || last === -1 || last <= first) return null;
-  return text.slice(first, last + 1).trim();
-}
+Do NOT output code, markdown fences, JSON blobs, or long bullet lists in
+your assistant text. All structured output goes through the tools.`;
 
 /**
  * POST /api/agent-sessions/:id/generate-features
  *
- * Reads the full chat history for a bootstrapper session, asks the LLM to
- * emit a feature list as JSON, inserts each feature row into the project,
- * and marks the session completed (so the project page swaps chat →
- * kanban). Responds with the generated feature count.
+ * Feature #59 — AI generates the feature list and populates the kanban.
  *
- * Implements Feature #59: AI generates feature list and populates kanban.
+ * Invokes the Claude Agent SDK with an in-process "feature-crud" MCP
+ * server that exposes CRUD + dependency tools scoped to this session's
+ * project. The agent reads the bootstrapper chat transcript and calls
+ * the tools to build the backlog. LM Studio is used by setting
+ * ANTHROPIC_BASE_URL in the subprocess env — the SDK itself drives all
+ * HTTP traffic; we never hit the OpenAI-compatible endpoint directly.
+ *
+ * When the agent finishes, we check the DB for newly-created features,
+ * close the bootstrapper session, and return the count so the UI can
+ * swap chat → kanban.
  */
 export async function POST(req: NextRequest, ctx: RouteContext) {
   const { id } = await ctx.params;
@@ -101,179 +98,106 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     );
   }
 
-  // Dump the transcript as a compact user message so the generator model
-  // sees the whole conversation at once; this avoids confusion over whose
-  // role is asking for JSON.
+  const project = getProject(session.projectId);
+  if (!project) {
+    return NextResponse.json({ error: "Project not found" }, { status: 404 });
+  }
+
+  const effective = getProjectEffectiveSettings(project.id);
+  const existingBefore = listFeaturesForProject(project.id).length;
+
   const transcript = history
     .map((m) => `${m.role.toUpperCase()}: ${m.content}`)
     .join("\n\n");
 
-  const llmMessages: LMStudioChatMessage[] = [
-    { role: "system", content: FEATURE_GEN_SYSTEM },
-    {
-      role: "user",
-      content: `Here is the conversation so far:\n\n${transcript}\n\nNow emit the JSON feature list.`,
-    },
-  ];
+  const abort = new AbortController();
+  req.signal.addEventListener("abort", () => abort.abort(), { once: true });
 
-  const settings = getGlobalSettings();
+  const mcpServer = buildFeatureCrudMcpServer(project.id);
 
-  let raw: string;
+  const toolCalls: Array<{ name: string; input: unknown }> = [];
+  let finalAssistantText = "";
+  let resultSubtype: string | undefined;
+
   try {
-    raw = await chatCompletion({
-      baseUrl: settings.lm_studio_url,
-      model: settings.model,
-      messages: llmMessages,
-      signal: req.signal,
-      temperature: 0.2,
-    });
+    for await (const message of query({
+      prompt: `The bootstrapper chat transcript follows. Generate the backlog now.\n\n${transcript}`,
+      options: {
+        systemPrompt: FEATURE_GEN_SYSTEM_PROMPT,
+        mcpServers: { "feature-crud": mcpServer },
+        allowedTools: [...FEATURE_CRUD_TOOL_NAMES],
+        // Disable every built-in tool — the agent has no reason to touch
+        // the filesystem or shell for this task.
+        tools: [],
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        env: {
+          ...process.env,
+          ANTHROPIC_BASE_URL: effective.lm_studio_url,
+        },
+        model: effective.model,
+        cwd: project.folderPath,
+        maxTurns: 40,
+        abortController: abort,
+      },
+    })) {
+      if (message.type === "assistant") {
+        const blocks = message.message.content as Array<{
+          type: string;
+          name?: string;
+          input?: unknown;
+          text?: string;
+        }>;
+        for (const block of blocks) {
+          if (block.type === "tool_use" && typeof block.name === "string") {
+            toolCalls.push({ name: block.name, input: block.input });
+            console.log(
+              `[generate-features] tool_use ${block.name}`,
+              JSON.stringify(block.input).slice(0, 300),
+            );
+          } else if (block.type === "text" && typeof block.text === "string") {
+            finalAssistantText = block.text;
+          }
+        }
+      } else if (message.type === "result") {
+        resultSubtype = message.subtype;
+        console.log(
+          `[generate-features] result subtype=${message.subtype} turns=${message.num_turns}`,
+        );
+      }
+    }
   } catch (err) {
-    const message =
-      err instanceof LMStudioUnavailableError
-        ? err.message
-        : err instanceof Error
-          ? err.message
-          : "LM Studio call failed";
-    return NextResponse.json({ error: message }, { status: 502 });
+    const msg = err instanceof Error ? err.message : String(err);
+    console.error("[generate-features] agent failed:", msg);
+    return NextResponse.json(
+      { error: `Agent failed: ${msg}` },
+      { status: 502 },
+    );
   }
 
-  const jsonText = extractJson(raw);
-  if (!jsonText) {
+  const features = listFeaturesForProject(project.id);
+  const createdCount = features.length - existingBefore;
+
+  if (createdCount <= 0) {
     return NextResponse.json(
       {
         error:
-          "AI did not return valid JSON. Try again with a clearer description.",
-        raw: raw.slice(0, 500),
+          "The agent finished without creating any features. Try again with a clearer description.",
+        toolCalls: toolCalls.length,
+        resultSubtype,
+        summary: finalAssistantText.slice(0, 500),
       },
       { status: 502 },
     );
   }
 
-  let parsed: { features?: RawFeature[] };
-  try {
-    parsed = JSON.parse(jsonText) as { features?: RawFeature[] };
-  } catch (err) {
-    const msg = err instanceof Error ? err.message : String(err);
-    return NextResponse.json(
-      { error: `AI JSON parse error: ${msg}`, raw: jsonText.slice(0, 500) },
-      { status: 502 },
-    );
-  }
-
-  const rawFeatures = Array.isArray(parsed.features) ? parsed.features : [];
-  if (rawFeatures.length === 0) {
-    return NextResponse.json(
-      { error: "AI returned no features" },
-      { status: 502 },
-    );
-  }
-
-  // Build a cleaned list of valid features first so we can run coverage
-  // checks before inserting. Titles must be non-empty after trim.
-  type CleanFeature = {
-    title: string;
-    description: string | null;
-    category: "functional" | "style";
-    rawDeps: unknown;
-  };
-
-  const clean: CleanFeature[] = [];
-  for (const f of rawFeatures) {
-    const title = typeof f.title === "string" ? f.title.trim() : "";
-    if (!title) continue;
-    const description =
-      typeof f.description === "string" ? f.description.trim() : null;
-    const category =
-      f.category === "style" ? "style" : ("functional" as const);
-    clean.push({
-      title: title.slice(0, 200),
-      description,
-      category,
-      rawDeps: f.depends_on,
-    });
-  }
-
-  // Feature #92 Step 6 guarantee: the generated list must include at least
-  // one "kanban/board UI" feature and at least one "SQLite/persistence"
-  // feature. If the LLM missed either, synthesize one so the backlog always
-  // has the coverage the E2E tests expect.
-  const haystack = clean
-    .map((c) => `${c.title} ${c.description ?? ""}`)
-    .join(" \n ")
-    .toLowerCase();
-  const hasKanban = /(kanban|board|column|backlog)/.test(haystack);
-  const hasPersistence = /(sqlite|persist|database|schema|restart)/.test(
-    haystack,
-  );
-  if (!hasKanban) {
-    clean.push({
-      title:
-        "Kanban board UI: Backlog / In Progress / Completed columns",
-      description:
-        "Render a three-column kanban board so users can see every to-do grouped by status.",
-      category: "functional",
-      rawDeps: undefined,
-    });
-  }
-  if (!hasPersistence) {
-    clean.push({
-      title: "SQLite persistence: to-dos survive a server restart",
-      description:
-        "Persist to-dos in a SQLite todos table with a migration so the list is identical after the dev server is killed and restarted.",
-      category: "functional",
-      rawDeps: undefined,
-    });
-  }
-
-  // Persist features in order so earlier items get lower priorities (surface
-  // first on the kanban). Keep a map of original index → created DB id so we
-  // can wire depends_on relationships after all rows exist.
-  const createdIds: number[] = [];
-  for (let i = 0; i < clean.length; i++) {
-    const f = clean[i];
-    try {
-      const record = createFeature({
-        projectId: session.projectId,
-        title: f.title,
-        description: f.description,
-        category: f.category,
-        status: "backlog",
-        priority: i,
-      });
-      createdIds.push(record.id);
-    } catch {
-      // Skip features that fail validation (e.g. empty title after trim).
-    }
-  }
-
-  // Best-effort dependency wiring. We use depends_on indices (1-based) from
-  // the raw output. Silent-failure is fine — the user can edit later.
-  if (createdIds.length > 0) {
-    const { addDependency } = await import("@/lib/features");
-    for (let i = 0; i < clean.length; i++) {
-      const deps = clean[i]?.rawDeps;
-      if (!Array.isArray(deps)) continue;
-      const targetId = createdIds[i];
-      if (targetId == null) continue;
-      for (const d of deps) {
-        const idx = typeof d === "number" ? Math.floor(d) - 1 : -1;
-        if (idx < 0 || idx >= i) continue; // only depend on earlier features
-        const depId = createdIds[idx];
-        if (depId == null) continue;
-        try {
-          addDependency(targetId, depId);
-        } catch {
-          /* ignore cycle / duplicate errors */
-        }
-      }
-    }
-  }
-
-  // Close the bootstrapper session so the project page swaps to the kanban.
   closeAgentSession(sessionId, "completed");
 
   return NextResponse.json({
-    count: createdIds.length,
-    projectId: session.projectId,
+    count: createdCount,
+    total: features.length,
+    projectId: project.id,
+    toolCalls: toolCalls.length,
+    summary: finalAssistantText.slice(0, 500),
   });
 }
