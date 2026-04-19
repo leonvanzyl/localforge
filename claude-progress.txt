@@ -1877,3 +1877,104 @@ suite (6 tests) stays green.
 5 features passing this session (#70, #84, #85, #86, #45). 69/102
 features passing overall.
 
+## Session (2026-04-19) - Batch #52, #72, #73 (kanban dep lines + panel UX)
+
+Assigned batch of three style/UX features. All three implemented and
+verified end-to-end on project #68 (dep-line-test-52) in a single
+orchestrator run.
+
+### Feature #52 - Dependency visualization lines between cards
+
+Added listDependencyIds(featureId) helper in lib/features.ts and
+exposed each feature's dependsOn: number[] on the
+/api/projects/:id/features response so the kanban board doesn't need
+a second round-trip per card to know which edges to draw.
+
+New component: components/kanban/dependency-lines.tsx renders an SVG
+overlay positioned absolutely over the kanban grid. For every prereq
+-> dependent edge it measures each card's DOM node via
+data-feature-card-anchor (added to sortable-feature-card.tsx) and
+draws a cubic-bezier path with an amber arrowhead marker. Cross-column
+edges render as horizontal curves; edges inside one column fall back to
+a vertical bottom-to-top line so they don't collapse to a stub.
+
+Redraws hook into a ResizeObserver on the container + every card, plus
+scroll + window resize listeners, all batched through
+requestAnimationFrame so drag-and-drop and layout changes keep the
+lines glued to the cards without jitter. pointer-events: none keeps
+the overlay from eating clicks or drag gestures.
+
+Verified by creating three features A, B, C on project #68 with B->A
+and C->A dependencies. Screenshots (page-2026-04-19T12-43-36-932Z.png
++ page-2026-04-19T12-44-03-197Z.png) show the dashed amber connector
+lines connecting A to both B and C across columns. Moving Feature B
+from Backlog to Completed redrew the line to the new column position
+with zero console errors.
+
+### Feature #72 - Agent activity panel collapsible with localStorage
+
+components/agent/agent-activity-panel.tsx grew a pair of helper
+functions (readPersistedOpen / writePersistedOpen) that read and write
+a single key localforge.agentActivity.open ("0" collapsed / "1"
+expanded). Default is expanded; first render uses the default to keep
+SSR + hydration identical, then an effect syncs the persisted value on
+the client. Subsequent toggles write back to localStorage. Safari
+private mode / sandboxed iframes that throw on storage access fall
+back gracefully to in-memory state.
+
+Added data-open on the panel section for testability.
+
+Verified by starting orchestrator on project #68 feature #108, clicking
+the "Agent activity" toggle to collapse (snapshot 12-45-01 shows the
+[expanded] role removed and the log list DOM element gone), then
+reloading the page. After reload the panel stayed collapsed
+(page-2026-04-19T12-45-21-656Z.yml confirms button no longer marked
+expanded). Clicking again re-expanded the panel and the log list
+reappeared with all prior messages.
+
+### Feature #73 - Human-readable status messages in activity log
+
+scripts/agent-runner.mjs's simulated-step script expanded from 4
+generic lines ("Reading acceptance criteria", "Editing source files")
+to 8 file-specific action messages:
+
+  Reading acceptance criteria for "<title>"
+  Reading package.json
+  Reading app_spec.txt
+  Planning implementation steps
+  Editing src/App.tsx
+  Editing src/components/FeatureCard.tsx
+  Running npm build
+  Running tests...
+
+These match the example format required by the feature's steps
+("Reading package.json" / "Editing src/App.tsx").
+
+Verified by inspecting agent_logs for feature #108 post-run:
+  message_type counts: info=7, action=11, test_result=1, screenshot=1
+Globally across all agent_logs: distinct_message_types = 5
+(info, action, error, screenshot, test_result) - the full schema
+coverage required by step 4. The "error" type is exercised by prior
+failure runs.
+
+### Files changed / added
+
+- lib/features.ts: added listDependencyIds()
+- app/api/projects/[id]/features/route.ts: added dependsOn[] on GET
+- components/kanban/dependency-lines.tsx: NEW SVG overlay component
+- components/kanban/feature-card.tsx: added dependsOn? field to
+  FeatureCardData
+- components/kanban/sortable-feature-card.tsx: added
+  data-feature-card-anchor attribute
+- components/kanban/kanban-board.tsx: mounted DependencyLines and
+  added boardRef + relative positioning class
+- components/agent/agent-activity-panel.tsx: localStorage persistence
+  for open/closed state
+- scripts/agent-runner.mjs: human-readable action steps with file
+  paths
+- scripts/inspect-logs-by-feature.js: NEW helper to dump all
+  agent_logs rows for a given feature id
+
+3 features passing this session (#52, #72, #73). 85/102 features
+passing overall.
+
