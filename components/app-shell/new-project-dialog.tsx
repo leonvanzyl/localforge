@@ -37,6 +37,9 @@ import { useShell } from "./shell-context";
 
 type CreateMode = "blank" | "ai";
 
+/** Mirrors lib/projects.ts MAX_PROJECT_NAME_LENGTH on the server. */
+const MAX_PROJECT_NAME_LENGTH = 120;
+
 export function NewProjectDialog() {
   const { isNewProjectDialogOpen, closeNewProjectDialog, refreshProjects } =
     useShell();
@@ -61,9 +64,20 @@ export function NewProjectDialog() {
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
+    // Validate the raw input so the user can see WHY submission failed.
+    // - Empty or whitespace-only names are rejected.
+    // - Names longer than MAX_PROJECT_NAME_LENGTH are rejected client-side
+    //   (the Input's maxLength attribute already caps typing, but we guard
+    //   against pasted input and keep server + client in lock-step).
     const trimmed = name.trim();
     if (!trimmed) {
       setError("Project name is required");
+      return;
+    }
+    if (trimmed.length > MAX_PROJECT_NAME_LENGTH) {
+      setError(
+        `Project name must be ${MAX_PROJECT_NAME_LENGTH} characters or fewer`,
+      );
       return;
     }
     setSubmitting(true);
@@ -153,9 +167,10 @@ export function NewProjectDialog() {
                 if (error) setError(null);
               }}
               disabled={submitting}
-              required
+              aria-invalid={error ? true : undefined}
+              aria-describedby={error ? "new-project-error" : undefined}
               autoComplete="off"
-              maxLength={120}
+              maxLength={MAX_PROJECT_NAME_LENGTH}
             />
           </div>
 
@@ -192,6 +207,7 @@ export function NewProjectDialog() {
 
           {error && (
             <p
+              id="new-project-error"
               role="alert"
               data-testid="new-project-error"
               className="text-sm text-destructive"
@@ -212,7 +228,7 @@ export function NewProjectDialog() {
           </Button>
           <Button
             type="submit"
-            disabled={submitting || name.trim().length === 0}
+            disabled={submitting}
             data-testid="new-project-submit"
           >
             {submitting ? (
