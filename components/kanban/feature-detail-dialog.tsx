@@ -1,7 +1,13 @@
 "use client";
 
 import * as React from "react";
-import { Loader2, Link2, TerminalSquare, X as XIcon } from "lucide-react";
+import {
+  Loader2,
+  Link2,
+  TerminalSquare,
+  Trash2,
+  X as XIcon,
+} from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -82,6 +88,7 @@ export function FeatureDetailDialog({
   projectId,
   onOpenChange,
   onSaved,
+  onDeleted,
   allFeatures,
 }: {
   open: boolean;
@@ -89,6 +96,12 @@ export function FeatureDetailDialog({
   projectId: number;
   onOpenChange: (open: boolean) => void;
   onSaved?: () => void;
+  /**
+   * Called when the feature is successfully deleted via the destructive
+   * "Delete feature" action (Feature #46). Lets the parent re-fetch the
+   * kanban so the deleted card disappears from the column.
+   */
+  onDeleted?: (featureId: number) => void;
   allFeatures: DetailFeature[];
 }) {
   const [feature, setFeature] = React.useState<DetailFeature | null>(null);
@@ -110,6 +123,19 @@ export function FeatureDetailDialog({
   const [logsLoading, setLogsLoading] = React.useState(false);
   const [logsError, setLogsError] = React.useState<string | null>(null);
 
+  /**
+   * Delete confirmation state (Feature #46).
+   *
+   * The first click of the "Delete feature" button toggles
+   * `confirmingDelete=true` which swaps the footer to a confirmation prompt
+   * with explicit "Cancel" and "Yes, delete" buttons. This is the
+   * "double-action" requirement from feature #46 - the user has to confirm
+   * before the DELETE request is sent.
+   */
+  const [confirmingDelete, setConfirmingDelete] = React.useState(false);
+  const [deleting, setDeleting] = React.useState(false);
+  const [deleteError, setDeleteError] = React.useState<string | null>(null);
+
   React.useEffect(() => {
     if (!open || featureId == null) return;
     let cancelled = false;
@@ -119,6 +145,12 @@ export function FeatureDetailDialog({
     setLogs([]);
     setLogsError(null);
     setLogsLoading(true);
+    // Always start with the destructive flow collapsed. If the user previously
+    // armed delete-confirmation and then closed the dialog, reopening should
+    // not still be armed.
+    setConfirmingDelete(false);
+    setDeleteError(null);
+    setDeleting(false);
 
     async function load(id: number) {
       try {
@@ -218,6 +250,34 @@ export function FeatureDetailDialog({
       return `Description must be ${DESC_MAX} characters or fewer`;
     }
     return null;
+  }
+
+  async function handleDelete() {
+    if (!feature) return;
+    setDeleting(true);
+    setDeleteError(null);
+    try {
+      const res = await fetch(`/api/features/${feature.id}`, {
+        method: "DELETE",
+      });
+      const data = (await res.json().catch(() => ({}))) as {
+        success?: boolean;
+        error?: string;
+      };
+      if (!res.ok || !data.success) {
+        throw new Error(data.error || `Delete failed (${res.status})`);
+      }
+      // Notify parent so it re-fetches the feature list and the deleted card
+      // disappears from the kanban. Then close the dialog.
+      onDeleted?.(feature.id);
+      onOpenChange(false);
+    } catch (err) {
+      setDeleteError(
+        err instanceof Error ? err.message : "Failed to delete feature",
+      );
+    } finally {
+      setDeleting(false);
+    }
   }
 
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
@@ -591,31 +651,118 @@ export function FeatureDetailDialog({
               </p>
             )}
           </DialogBody>
-          <DialogFooter>
-            <Button
-              type="button"
-              variant="outline"
-              onClick={() => onOpenChange(false)}
-              disabled={saving}
-              data-testid="feature-detail-cancel"
-            >
-              Close
-            </Button>
-            <Button
-              type="submit"
-              disabled={saving || loading || !feature}
-              data-testid="feature-detail-save"
-            >
-              {saving ? (
-                <>
-                  <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                  Saving…
-                </>
-              ) : (
-                "Save changes"
-              )}
-            </Button>
+          <DialogFooter className="sm:justify-between">
+            {/* Left side: destructive delete affordance (Feature #46).
+                When the user clicks "Delete feature" the first time we swap
+                this region to a confirmation prompt instead of deleting
+                immediately, satisfying the "double-action" requirement. */}
+            {feature && !confirmingDelete && (
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  setDeleteError(null);
+                  setConfirmingDelete(true);
+                }}
+                disabled={saving || deleting || loading}
+                data-testid="feature-detail-delete"
+              >
+                <Trash2 className="h-4 w-4" aria-hidden="true" />
+                Delete feature
+              </Button>
+            )}
+            {feature && confirmingDelete && (
+              <div
+                data-testid="feature-detail-delete-confirm"
+                className="flex flex-1 flex-col gap-2 sm:flex-row sm:items-center sm:justify-between"
+              >
+                <p
+                  data-testid="feature-detail-delete-warning"
+                  className="text-sm text-destructive"
+                >
+                  Delete this feature? This also removes its dependency
+                  links and cannot be undone.
+                </p>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => {
+                      setConfirmingDelete(false);
+                      setDeleteError(null);
+                    }}
+                    disabled={deleting}
+                    data-testid="feature-detail-delete-cancel"
+                  >
+                    Cancel
+                  </Button>
+                  <Button
+                    type="button"
+                    variant="destructive"
+                    onClick={handleDelete}
+                    disabled={deleting}
+                    data-testid="feature-detail-delete-confirm-button"
+                  >
+                    {deleting ? (
+                      <>
+                        <Loader2
+                          className="h-4 w-4 animate-spin"
+                          aria-hidden="true"
+                        />
+                        Deleting…
+                      </>
+                    ) : (
+                      <>
+                        <Trash2 className="h-4 w-4" aria-hidden="true" />
+                        Yes, delete
+                      </>
+                    )}
+                  </Button>
+                </div>
+              </div>
+            )}
+            {!confirmingDelete && (
+              <div className="flex gap-2 sm:ml-auto">
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => onOpenChange(false)}
+                  disabled={saving || deleting}
+                  data-testid="feature-detail-cancel"
+                >
+                  Close
+                </Button>
+                <Button
+                  type="submit"
+                  disabled={saving || loading || !feature || deleting}
+                  data-testid="feature-detail-save"
+                >
+                  {saving ? (
+                    <>
+                      <Loader2
+                        className="h-4 w-4 animate-spin"
+                        aria-hidden="true"
+                      />
+                      Saving…
+                    </>
+                  ) : (
+                    "Save changes"
+                  )}
+                </Button>
+              </div>
+            )}
           </DialogFooter>
+          {deleteError && (
+            <div className="border-t border-border px-6 py-2">
+              <p
+                role="alert"
+                data-testid="feature-detail-delete-error"
+                className="text-sm text-destructive"
+              >
+                {deleteError}
+              </p>
+            </div>
+          )}
         </form>
       </div>
     </Dialog>

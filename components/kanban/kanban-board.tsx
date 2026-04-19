@@ -197,6 +197,12 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
         onSaved={() => {
           void load();
         }}
+        onDeleted={() => {
+          // Re-fetch the feature list after delete (Feature #46) so the
+          // deleted card immediately disappears from its column. Closing
+          // the modal is handled inside the detail dialog itself.
+          void load();
+        }}
       />
     </>
   );
