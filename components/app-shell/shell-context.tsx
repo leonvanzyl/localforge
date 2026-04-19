@@ -18,6 +18,10 @@ export type ProjectListItem = {
   id: number;
   name: string;
   status: string;
+  /** Total feature count for the project. May be 0. */
+  featureCount?: number;
+  /** Number of features in the "completed" status. May be 0. */
+  completedCount?: number;
 };
 
 type ShellContextValue = {

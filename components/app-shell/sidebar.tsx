@@ -113,12 +113,17 @@ export function Sidebar() {
             <ul className="space-y-1" data-testid="sidebar-project-list">
               {projects.map((p) => {
                 const active = pathname === `/projects/${p.id}`;
+                const total = p.featureCount ?? 0;
+                const done = p.completedCount ?? 0;
+                const fullyDone = total > 0 && done === total;
                 return (
                   <li key={p.id}>
                     <Link
                       href={`/projects/${p.id}`}
                       data-testid={`sidebar-project-${p.id}`}
                       data-active={active ? "true" : "false"}
+                      data-feature-total={total}
+                      data-feature-done={done}
                       className={cn(
                         "flex items-center justify-between gap-2 rounded-md px-3 py-2 text-sm transition-colors",
                         active
@@ -135,6 +140,21 @@ export function Sidebar() {
                           aria-hidden="true"
                         />
                         <span className="truncate">{p.name}</span>
+                      </span>
+                      <span
+                        data-testid={`sidebar-project-progress-${p.id}`}
+                        aria-label={`${done} of ${total} features done`}
+                        title={`${done} of ${total} features done`}
+                        className={cn(
+                          "shrink-0 rounded-full border px-1.5 py-0.5 text-[10px] font-semibold tabular-nums",
+                          fullyDone
+                            ? "border-emerald-500/40 bg-emerald-500/10 text-emerald-400"
+                            : active
+                              ? "border-primary/40 bg-primary/10 text-primary"
+                              : "border-border bg-background/60 text-muted-foreground",
+                        )}
+                      >
+                        {done}/{total}
                       </span>
                     </Link>
                   </li>

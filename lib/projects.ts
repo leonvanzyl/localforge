@@ -3,7 +3,7 @@ import path from "node:path";
 import fs from "node:fs";
 import { eq } from "drizzle-orm";
 import { db } from "./db";
-import { projects, settings } from "./db/schema";
+import { projects, features, settings } from "./db/schema";
 
 /**
  * Project domain helpers.
@@ -26,6 +26,21 @@ import { projects, settings } from "./db/schema";
 const DEFAULT_WORKING_DIR = path.join(process.cwd(), "projects");
 const DEFAULT_LM_STUDIO_URL = "http://127.0.0.1:1234";
 const DEFAULT_MODEL = "google/gemma-4-31b";
+
+/** Max length for a project name. Matches the Input maxLength in the dialog. */
+export const MAX_PROJECT_NAME_LENGTH = 120;
+
+/**
+ * Domain-specific validation error. API routes translate this into a 400
+ * Bad Request rather than a 500 so the client can surface the message.
+ */
+export class ProjectValidationError extends Error {
+  status = 400;
+  constructor(message: string) {
+    super(message);
+    this.name = "ProjectValidationError";
+  }
+}
 
 export type ProjectRecord = typeof projects.$inferSelect;
 
@@ -98,15 +113,67 @@ export function listProjects(): ProjectRecord[] {
   return db.select().from(projects).all();
 }
 
+/**
+ * Project record extended with feature progress counts. Used by the sidebar
+ * to render the "{completed}/{total}" status indicator beside each project
+ * (Feature #29).
+ */
+export type ProjectWithProgress = ProjectRecord & {
+  featureCount: number;
+  completedCount: number;
+};
+
+/**
+ * List all projects, joining each row with completed/total feature counts.
+ *
+ * Done with two small queries instead of a SQL JOIN to keep the code path
+ * driver-agnostic and trivially testable. Project counts are typically very
+ * small (one row per project, a few features each), so the overhead is
+ * negligible compared to the round-trip cost of one HTTP request.
+ */
+export function listProjectsWithProgress(): ProjectWithProgress[] {
+  // Pull all features once and group in JS — single query is simpler than
+  // GROUP BY when we already need the projects row anyway.
+  const allProjects = db.select().from(projects).all();
+  // Inline import keeps the schema dependency local without polluting the
+  // top of the file (which is otherwise project-only).
+  const allFeatures = db.select().from(features).all();
+
+  const totals = new Map<number, number>();
+  const completed = new Map<number, number>();
+  for (const f of allFeatures) {
+    totals.set(f.projectId, (totals.get(f.projectId) ?? 0) + 1);
+    if (f.status === "completed") {
+      completed.set(f.projectId, (completed.get(f.projectId) ?? 0) + 1);
+    }
+  }
+
+  return allProjects.map((p) => ({
+    ...p,
+    featureCount: totals.get(p.id) ?? 0,
+    completedCount: completed.get(p.id) ?? 0,
+  }));
+}
+
 export function getProject(id: number): ProjectRecord | null {
   const row = db.select().from(projects).where(eq(projects.id, id)).get();
   return row ?? null;
 }
 
 export function createProject(input: CreateProjectInput): ProjectRecord {
-  const name = input.name?.trim();
+  const rawName = typeof input.name === "string" ? input.name : "";
+  const name = rawName.trim();
+  // Validate: empty/whitespace-only names are rejected, as are excessively
+  // long names that could confuse the filesystem or UI. We use the domain
+  // error class so the API route can translate to a 400 Bad Request (the
+  // client renders the message inline).
   if (!name) {
-    throw new Error("Project name is required");
+    throw new ProjectValidationError("Project name is required");
+  }
+  if (name.length > MAX_PROJECT_NAME_LENGTH) {
+    throw new ProjectValidationError(
+      `Project name must be ${MAX_PROJECT_NAME_LENGTH} characters or fewer`,
+    );
   }
 
   const workingDir = getWorkingDirectory();

@@ -1,10 +1,14 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createProject, listProjects } from "@/lib/projects";
+import {
+  createProject,
+  listProjectsWithProgress,
+  ProjectValidationError,
+} from "@/lib/projects";
 
-// GET /api/projects - list all projects
+// GET /api/projects - list all projects with feature progress counts
 export async function GET() {
   try {
-    const all = listProjects();
+    const all = listProjectsWithProgress();
     return NextResponse.json({ projects: all });
   } catch (err) {
     const message = err instanceof Error ? err.message : "Unknown error";
@@ -43,6 +47,12 @@ export async function POST(req: NextRequest) {
     });
     return NextResponse.json({ project: created }, { status: 201 });
   } catch (err) {
+    // Domain validation errors (empty name, overly long name, etc.) surface
+    // as 400 so the client can show the message inline. Anything else is
+    // an unexpected server problem and becomes a 500.
+    if (err instanceof ProjectValidationError) {
+      return NextResponse.json({ error: err.message }, { status: err.status });
+    }
     const message = err instanceof Error ? err.message : "Unknown error";
     return NextResponse.json({ error: message }, { status: 500 });
   }
