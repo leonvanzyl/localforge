@@ -248,3 +248,52 @@ devStore, mockDb, mockData, fakeData, sampleData, dummyData).
   - GET /api/settings returns the persisted JSON shape.
 
 13/86 features passing after this session.
+
+## Session 6 (2026-04-19) - Feature #17
+
+### Completed: Feature #17 Mobile layout shows hamburger menu at 375px
+
+No code changes required - components/app-shell/sidebar.tsx already
+implements the mobile hamburger toggle correctly. Verified the existing
+implementation satisfies all 9 spec steps end-to-end.
+
+Relevant sidebar behavior (components/app-shell/sidebar.tsx):
+  - `md:hidden` hamburger trigger fixed top-left (lines 35-44) swaps
+    between Menu and X lucide icons and has data-testid="sidebar-toggle"
+    + aria-label "Open navigation menu" + aria-expanded.
+  - Aside uses `-translate-x-full` when closed, `translate-x-0` when
+    mobileOpen, with `md:static md:translate-x-0` so desktop is
+    unaffected (line 55-63).
+  - Backdrop overlay (line 47-53) dismisses the drawer on click at
+    below-md widths.
+  - useEffect closes the drawer when pathname changes, so nav is
+    automatically hidden after navigation.
+
+Verification performed (all 9 spec steps):
+  1. ✅ Set Playwright viewport to 375x667 via `playwright-cli resize`.
+  2. ✅ Navigated to http://localhost:3000/ (HTTP 200, title "LocalForge").
+  3. ✅ Sidebar hidden by default - screenshot
+     .playwright-cli/page-2026-04-19T11-35-28-147Z.png shows only the
+     hamburger icon top-left and the Welcome hero fills the 375px width;
+     no "Projects" sidebar content visible.
+  4. ✅ Located hamburger via data-testid="sidebar-toggle" (snapshot
+     ref=e58, aria-label "Open navigation menu").
+  5. ✅ Clicked hamburger via `playwright-cli click e58`.
+  6. ✅ Sidebar slid in - screenshot
+     .playwright-cli/page-2026-04-19T11-35-46-379Z.png shows the drawer
+     covering the left ~75% of viewport with brand block, "Projects"
+     header, "No projects yet" empty state, and Settings link. Icon
+     toggled to X, aria-expanded=true.
+  7. ✅ Clicked same toggle (now showing X) again to dismiss.
+  8. ✅ Sidebar hid again - screenshot
+     .playwright-cli/page-2026-04-19T11-36-09-273Z.png matches the
+     initial closed state. Icon toggled back to Menu.
+  9. ✅ Screenshots captured before/after open (see above).
+
+Console check: 0 errors, 0 warnings (only React DevTools info, HMR
+connect log, and the Drizzle "select projects" query log).
+
+Mock-data scan (STEP 5.6): clean - only hit is the lib/db/index.ts
+doc comment explicitly forbidding in-memory storage.
+
+14/86 features passing after this session.
