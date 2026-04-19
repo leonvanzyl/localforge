@@ -36,7 +36,7 @@ export default function RootLayout({
           dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }}
         />
       </head>
-      <body className="min-h-screen bg-background text-foreground antialiased">
+      <body className="h-screen overflow-hidden bg-background text-foreground antialiased">
         <ThemeProvider>
           <AppShell>{children}</AppShell>
         </ThemeProvider>
