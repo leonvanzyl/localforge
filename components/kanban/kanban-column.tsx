@@ -70,7 +70,7 @@ export function KanbanColumn({
       data-count={displayCount}
       aria-label={title}
       className={cn(
-        "flex min-w-[280px] flex-1 flex-col rounded-lg border border-border bg-card/40",
+        "flex min-h-0 min-w-[280px] flex-1 flex-col rounded-lg border border-border bg-card/40",
       )}
     >
       <header
