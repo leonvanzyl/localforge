@@ -260,11 +260,18 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
   }
 }
 
-const CODING_SYSTEM_PROMPT = `You are LocalForge's coding agent.
+function buildCodingSystemPrompt(projectDir) {
+  return `You are LocalForge's coding agent.
 
-You have been handed ONE backlog feature for a local project. Your current
-working directory is the project root. Implement the feature end-to-end using
-the tools available to you (Read, Write, Edit, Bash, Grep, Glob).
+You have been handed ONE backlog feature for a local project. Implement it
+end-to-end using the tools available (Read, Write, Edit, Bash, Grep, Glob).
+
+THE WORKSPACE IS ${projectDir}
+This is your cwd and the ONLY directory you may modify. Every path you pass
+to Write/Edit must resolve inside ${projectDir}. Use relative paths when you
+can; if you use an absolute path it must start with ${projectDir}. Bash
+commands must not cd out of this directory or touch files above it. Writes
+to ancestor directories will be refused by the runtime.
 
 Workflow:
 1. Read any existing source files you need to understand context (package.json,
@@ -283,6 +290,96 @@ Rules:
 - Do NOT ask the user questions. Make reasonable assumptions and note them
   in your final reply.
 - Do NOT invent files you have not read. Always Read before you Edit.`;
+}
+
+/**
+ * Workspace guard: a `canUseTool` callback that denies any file-writing or
+ * shell-escape that would modify paths outside the project directory. This
+ * is the enforcement layer — the system prompt tells the model the rule,
+ * but we do not trust a local model to follow it.
+ *
+ * Read-only tools (Read, Grep, Glob, WebFetch, WebSearch, ...) are allowed
+ * unconditionally so the agent can still consult config in the harness dir
+ * if it wants to. Bash is the most fuzzy — we scan its command string for
+ * absolute paths that resolve outside the root and deny on a match.
+ */
+function makeWorkspaceGuard(projectDir, onDenied) {
+  const root = path.resolve(projectDir);
+
+  function isInsideRoot(candidate) {
+    const resolved = path.resolve(root, candidate);
+    if (resolved === root) return true;
+    const rel = path.relative(root, resolved);
+    return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
+  }
+
+  // Match absolute paths in Bash commands. Windows: drive letter + separator.
+  // POSIX: leading slash. The lookbehind anchors the match to start-of-string
+  // or a shell boundary (whitespace, `;`, `&`, `|`, `(`) so we don't mis-match
+  // the second `/` of `http://...` or the `/x` inside `./x`.
+  const ABS_PATH_RE = /(?<=^|[\s;&|(])(?:[a-zA-Z]:[\\/]|\/)[^\s"'`<>|;&]+/g;
+
+  return async function canUseTool(toolName, input) {
+    if (
+      toolName === "Write" ||
+      toolName === "Edit" ||
+      toolName === "NotebookEdit"
+    ) {
+      const raw = input?.file_path ?? input?.notebook_path ?? input?.path;
+      if (typeof raw !== "string" || raw.length === 0) {
+        return { behavior: "allow" };
+      }
+      if (!isInsideRoot(raw)) {
+        const resolved = path.resolve(root, raw);
+        const msg = `Refused: ${toolName} to ${resolved} is outside the workspace ${root}. Use a path inside the workspace.`;
+        onDenied?.(toolName, msg);
+        return { behavior: "deny", message: msg };
+      }
+      return { behavior: "allow" };
+    }
+
+    if (toolName === "Bash") {
+      const cmd = String(input?.command ?? "");
+      if (!cmd) return { behavior: "allow" };
+      // Quick escape detection: any absolute path token that falls outside
+      // the workspace. This is a heuristic — a determined model could still
+      // bypass it with clever shell quoting — but it stops the common cases
+      // (direct `rm C:\...`, `cp ... /etc/...`, `cd ..`-to-elsewhere plus
+      // relative ops). URLs are skipped so `curl https://...` keeps working.
+      let m;
+      ABS_PATH_RE.lastIndex = 0;
+      while ((m = ABS_PATH_RE.exec(cmd)) !== null) {
+        const raw = m[0].replace(/[)"'`]+$/, "");
+        // Skip shell glob patterns and TS path aliases like `@/*` or
+        // `src/**/*.ts` — these travel through commands as text, they
+        // aren't filesystem targets the process acts on directly.
+        if (/[*?]/.test(raw)) continue;
+        if (/^(https?|ftp|file):\/\//i.test(raw)) continue;
+        // Common system paths that shell commands legitimately reference
+        // (e.g. /dev/null for redirection, /tmp for scratch).
+        if (
+          raw === "/dev/null" ||
+          raw === "/dev/stdout" ||
+          raw === "/dev/stderr" ||
+          raw.startsWith("/tmp/") ||
+          raw === "/tmp"
+        ) {
+          continue;
+        }
+        if (!isInsideRoot(raw)) {
+          const msg = `Refused: Bash command references ${raw} which is outside the workspace ${root}. Use paths inside the workspace.`;
+          onDenied?.(toolName, msg);
+          return { behavior: "deny", message: msg };
+        }
+      }
+      return { behavior: "allow" };
+    }
+
+    // Every other tool (Read, Grep, Glob, WebFetch, WebSearch, ...) is safe
+    // to allow. We care about modifications, not reads.
+    return { behavior: "allow" };
+  };
+}
 
 function buildUserPrompt(feature) {
   const title = feature.title ?? "";
@@ -319,6 +416,9 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort }) {
     10,
   );
   const userPrompt = buildUserPrompt(feature);
+  const canUseTool = makeWorkspaceGuard(projectDir, (toolName, message) => {
+    emitLog(`Blocked ${toolName}: ${message}`, "error");
+  });
 
   let toolCalls = 0;
   let lastAssistantText = "";
@@ -329,9 +429,14 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort }) {
     for await (const message of query({
       prompt: userPrompt,
       options: {
-        systemPrompt: CODING_SYSTEM_PROMPT,
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
+        systemPrompt: buildCodingSystemPrompt(projectDir),
+        // `default` mode + `canUseTool` lets our callback gate every tool
+        // call. Previously we used `bypassPermissions`, which skipped the
+        // callback entirely — that is what let a local model write
+        // `C:\claude-code\package.json` from a session rooted at a project
+        // subfolder. Never again.
+        permissionMode: "default",
+        canUseTool,
         env: {
           ...process.env,
           ANTHROPIC_BASE_URL: baseUrl,
