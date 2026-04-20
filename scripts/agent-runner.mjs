@@ -37,7 +37,11 @@
  *   ANTHROPIC_BASE_URL        forwarded to the SDK (also set explicitly in
  *                             the query() options so it is unambiguous).
  *   LOCALFORGE_MAX_TURNS      optional override for the SDK's maxTurns
- *                             (default 30).
+ *                             (default 100). Project-scaffolding features
+ *                             (create-next-app + shadcn init + drizzle +
+ *                             repeated `npm run build` fixes) can easily
+ *                             spend 30-60 turns before they converge, so
+ *                             the floor has to be generous.
  *   LOCALFORGE_PLAYWRIGHT_BASE_URL
  *                             baseURL the post-run verification Playwright
  *                             run navigates to. Defaults to http://localhost:3000.
@@ -311,7 +315,7 @@ function readFeaturePromptFile(promptFile) {
 
 async function runCodingAgent({ feature, projectDir, baseUrl, model, abort }) {
   const maxTurns = Number.parseInt(
-    process.env.LOCALFORGE_MAX_TURNS ?? "30",
+    process.env.LOCALFORGE_MAX_TURNS ?? "100",
     10,
   );
   const userPrompt = buildUserPrompt(feature);
@@ -334,7 +338,7 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort }) {
         },
         model,
         cwd: projectDir,
-        maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? maxTurns : 30,
+        maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? maxTurns : 100,
         abortController: abort,
       },
     })) {
