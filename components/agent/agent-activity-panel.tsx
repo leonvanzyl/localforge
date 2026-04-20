@@ -126,6 +126,7 @@ function writePersistedOpen(open: boolean): void {
 
 export function AgentActivityPanel({ projectId }: { projectId: number }) {
   const [session, setSession] = React.useState<ActiveSession | null>(null);
+  const [featureNumber, setFeatureNumber] = React.useState<number | null>(null);
   const [logs, setLogs] = React.useState<LogEvent[]>([]);
   const [statusText, setStatusText] = React.useState<
     "idle" | "connecting" | "streaming" | "completed" | "failed" | "terminated"
@@ -166,12 +167,14 @@ export function AgentActivityPanel({ projectId }: { projectId: number }) {
         const data = (await res.json()) as {
           session: ActiveSession | null;
           running: boolean;
+          featureNumber?: number | null;
         };
         if (cancelled) return;
         setSession((prev) => {
           if (data.session?.id === prev?.id) return prev;
           return data.session;
         });
+        setFeatureNumber(data.featureNumber ?? null);
       } catch {
         // ignore transient failures
       }
@@ -288,7 +291,7 @@ export function AgentActivityPanel({ projectId }: { projectId: number }) {
           <StatusPill status={statusText} />
           {session.featureId && (
             <span className="text-xs text-muted-foreground">
-              feature #{session.featureId}
+              feature #{featureNumber ?? session.featureId}
             </span>
           )}
         </div>

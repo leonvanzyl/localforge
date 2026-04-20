@@ -507,7 +507,13 @@ export function FeatureDetailDialog({
         >
           <DialogHeader>
             <DialogTitle id="feature-detail-title">
-              {feature ? `Feature #${feature.id}` : "Feature details"}
+              {feature
+                ? `Feature ${
+                    [...allFeatures]
+                      .sort((a, b) => a.id - b.id)
+                      .findIndex((f) => f.id === feature.id) + 1
+                  } of ${allFeatures.length}`
+                : "Feature details"}
             </DialogTitle>
           </DialogHeader>
           <DialogBody className="space-y-4">

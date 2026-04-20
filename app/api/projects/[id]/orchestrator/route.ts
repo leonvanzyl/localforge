@@ -3,7 +3,7 @@ import {
   getActiveSessionForProject,
 } from "@/lib/agent-sessions";
 import { getProject } from "@/lib/projects";
-import { getFeature } from "@/lib/features";
+import { getFeature, listFeaturesForProject } from "@/lib/features";
 import {
   OrchestratorError,
   isSessionRunning,
@@ -15,22 +15,18 @@ import {
  * Orchestrator REST endpoint for a project.
  *
  * GET   /api/projects/:id/orchestrator  → current active session (or null)
- * POST  /api/projects/:id/orchestrator  → body { action?: "start" | "stop",
- *                                                outcome?: "success" | "failure",
- *                                                durationMs?: number }
+ * POST  /api/projects/:id/orchestrator  → body { action?: "start" | "stop" }
  *
- * The POST action=start call picks the highest-priority ready feature,
- * transitions it to in_progress, creates an agent_session row, and spawns a
- * Node.js child process running the Claude Agent SDK runner (Feature #63).
- * POST action=stop force-terminates that child process (Feature #73 /
+ * POST action=start picks the highest-priority ready feature, transitions it
+ * to in_progress, creates an agent_session row, and spawns a Node.js child
+ * process running the Claude Agent SDK runner (scripts/agent-runner.mjs),
+ * which drives a real inference session against the configured local model.
+ *
+ * POST action=stop force-terminates the running child process (Feature #73
  * force-stop coverage).
  *
- * `outcome`/`durationMs` are test hooks used by features #67 & #68 to force
- * success or failure paths without LM Studio. They default to success / a
- * short runtime in production so real runs behave naturally.
- *
- * This route MUST run on the Node.js runtime (not edge) because spawning
- * child processes and writing to SQLite are Node APIs.
+ * Must run on the Node.js runtime (not edge) because spawning child processes
+ * and writing to SQLite are Node APIs.
  */
 export const runtime = "nodejs";
 
@@ -54,7 +50,17 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
   const session = getActiveSessionForProject(projectId, "coding");
   const running = session ? isSessionRunning(session.id) : false;
   const feature = session?.featureId ? getFeature(session.featureId) : null;
-  return NextResponse.json({ session, running, feature });
+  // Per-project 1-based feature index so the UI never surfaces the raw
+  // (shared-autoincrement) DB id.
+  let featureNumber: number | null = null;
+  if (feature) {
+    const sorted = [...listFeaturesForProject(projectId)].sort(
+      (a, b) => a.id - b.id,
+    );
+    const i = sorted.findIndex((f) => f.id === feature.id);
+    featureNumber = i >= 0 ? i + 1 : null;
+  }
+  return NextResponse.json({ session, running, feature, featureNumber });
 }
 
 export async function POST(req: NextRequest, ctx: RouteContext) {
@@ -68,11 +74,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  let body: {
-    action?: string;
-    outcome?: string;
-    durationMs?: number;
-  } = {};
+  let body: { action?: string } = {};
   try {
     body = (await req.json().catch(() => ({}))) as typeof body;
   } catch {
@@ -95,14 +97,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
 
   // action === "start"
   try {
-    const outcome =
-      body.outcome === "failure" ? "failure" : "success";
-    const durationMs =
-      typeof body.durationMs === "number" && body.durationMs > 0
-        ? body.durationMs
-        : undefined;
-
-    const result = startOrchestrator(projectId, { outcome, durationMs });
+    const result = startOrchestrator(projectId);
     return NextResponse.json(
       {
         session: result.session,

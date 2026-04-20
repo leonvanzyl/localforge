@@ -1,4 +1,6 @@
 import "server-only";
+import fs from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
@@ -100,11 +102,10 @@ type RunningSession = {
   stdoutBuffer: string;
   stderrBuffer: string;
   /**
-   * Options the session was started with. Preserved so Feature #70's
-   * auto-continue loop can pass the same outcome/durationMs to the next
-   * feature without the caller having to re-specify them.
+   * Absolute path to the JSON prompt file written for this run. The runner
+   * reads it on startup; the orchestrator cleans it up in the close handler.
    */
-  options: StartOptions;
+  promptFile: string;
 };
 
 type OrchestratorState = {
@@ -199,17 +200,6 @@ export function getRunningSessionsForProject(
   return out;
 }
 
-export type StartOptions = {
-  /**
-   * Override the simulated outcome for the runner. Used by tests (features
-   * #67 and #68) to force a success or failure path without needing LM
-   * Studio running locally. Real runs default to "success".
-   */
-  outcome?: "success" | "failure";
-  /** Total runner duration in milliseconds (default 2500). */
-  durationMs?: number;
-};
-
 export type StartResult = {
   session: AgentSessionRecord;
   feature: FeatureRecord;
@@ -229,10 +219,7 @@ export type StartResult = {
  *   - the project does not exist
  *   - there is no ready feature to work on
  */
-export function startOrchestrator(
-  projectId: number,
-  options: StartOptions = {},
-): StartResult {
+export function startOrchestrator(projectId: number): StartResult {
   const project = getProject(projectId);
   if (!project) {
     throw new OrchestratorError("Project not found", 404);
@@ -303,12 +290,10 @@ export function startOrchestrator(
     featureStatus: "in_progress",
   });
 
-  const child = spawnAgentRunner({
+  const { child, promptFile } = spawnAgentRunner({
     session,
     feature: movedFeature,
     projectDir: project.folderPath,
-    outcome: options.outcome ?? "success",
-    durationMs: options.durationMs ?? 2500,
   });
 
   const rs: RunningSession = {
@@ -317,10 +302,7 @@ export function startOrchestrator(
     child,
     stdoutBuffer: "",
     stderrBuffer: "",
-    options: {
-      outcome: options.outcome,
-      durationMs: options.durationMs,
-    },
+    promptFile,
   };
   getState().running.set(session.id, rs);
 
@@ -386,12 +368,31 @@ function spawnAgentRunner(args: {
   session: AgentSessionRecord;
   feature: FeatureRecord;
   projectDir: string;
-  outcome: "success" | "failure";
-  durationMs: number;
-}): ChildProcessWithoutNullStreams {
+}): { child: ChildProcessWithoutNullStreams; promptFile: string } {
   const runnerPath = path.join(process.cwd(), "scripts", "agent-runner.mjs");
   const { baseUrl, model, provider } = getEffectiveProviderConfig(
     args.session.projectId,
+  );
+
+  // Write the feature context to a temp JSON file so the runner can read
+  // long descriptions and acceptance criteria without argv escaping pain.
+  const promptFile = path.join(
+    os.tmpdir(),
+    `localforge-prompt-${args.session.id}.json`,
+  );
+  fs.writeFileSync(
+    promptFile,
+    JSON.stringify(
+      {
+        id: args.feature.id,
+        title: args.feature.title,
+        description: args.feature.description,
+        acceptanceCriteria: args.feature.acceptanceCriteria,
+      },
+      null,
+      2,
+    ),
+    "utf8",
   );
 
   const argv = [
@@ -402,12 +403,10 @@ function spawnAgentRunner(args: {
     String(args.feature.id),
     "--feature-title",
     args.feature.title,
+    "--prompt-file",
+    promptFile,
     "--project-dir",
     args.projectDir,
-    "--outcome",
-    args.outcome,
-    "--duration-ms",
-    String(args.durationMs),
     "--base-url",
     baseUrl,
     "--provider",
@@ -424,12 +423,9 @@ function spawnAgentRunner(args: {
       LOCALFORGE_SESSION_ID: String(args.session.id),
       LOCALFORGE_FEATURE_ID: String(args.feature.id),
     },
-    // "pipe" for all three gives us a ChildProcessWithoutNullStreams so the
-    // type stays tight. We don't write to stdin, but having it piped rather
-    // than ignored is harmless and keeps the type narrow.
     stdio: "pipe",
   });
-  return child;
+  return { child, promptFile };
 }
 
 function attachChildHandlers(rs: RunningSession): void {
@@ -607,6 +603,13 @@ function finalizeSession(
   if (!getState().running.has(rs.session.id)) return;
   getState().running.delete(rs.session.id);
 
+  // Best-effort cleanup of the temp prompt file the runner consumed.
+  try {
+    if (rs.promptFile) fs.unlinkSync(rs.promptFile);
+  } catch {
+    /* ignore */
+  }
+
   let finalSessionStatus: SessionStatus;
   let finalFeature: FeatureRecord | null = getFeature(rs.feature.id);
 
@@ -726,38 +729,23 @@ function finalizeSession(
  * Feature #70 — "orchestrator continues to next feature after completion".
  *
  * After a successful finalize we check whether another backlog feature is
- * ready (all dependencies met) and, if so, spawn a fresh session for it. The
- * call is wrapped in `setImmediate` so we unwind the current call stack (and
- * release the `getState().running` map slot we just deleted above) before
- * the new `startOrchestrator` sees the state — otherwise the idempotent
- * "existing session" branch could wedge on the just-finalized id.
+ * ready and, if so, spawn a fresh session for it. Wrapped in `setImmediate`
+ * so we unwind the current call stack (releasing the `getState().running`
+ * slot we just deleted) before the new `startOrchestrator` runs.
  *
- * We intentionally re-use the same StartOptions (outcome / durationMs) as the
- * session that just finished. That means a test calling the orchestrator
- * with `{outcome:"success", durationMs:500}` will keep chaining short
- * deterministic successes through every ready feature without needing to
- * re-POST between each one.
- *
- * Errors are swallowed + logged. Auto-continue is a convenience; any failure
- * leaves the kanban in the state the user saw right after completion (the
- * Start button will simply come back).
+ * Errors are swallowed + logged — any failure leaves the kanban in its
+ * current state and the user can click Start again manually.
  */
 function maybeContinueWithNextFeature(rs: RunningSession): void {
   const projectId = rs.session.projectId;
-  const options = rs.options;
 
   setImmediate(() => {
     try {
-      // Recheck readiness — the previous feature may have been the last in
-      // its dependency chain, in which case the project_completed path
-      // handles it and we have nothing to start.
       const next = findNextReadyFeatureForProject(projectId);
       if (!next) return;
-
       // startOrchestrator is idempotent; if something else already spun up a
-      // session for this project (e.g. a user clicked Start in parallel) it
-      // returns the existing one instead of creating a duplicate.
-      startOrchestrator(projectId, options);
+      // session for this project it returns the existing one.
+      startOrchestrator(projectId);
     } catch (err) {
       // eslint-disable-next-line no-console
       console.error(

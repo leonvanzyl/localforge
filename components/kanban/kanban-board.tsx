@@ -23,7 +23,11 @@ import {
 } from "@dnd-kit/sortable";
 
 import { KanbanColumn } from "./kanban-column";
-import { FeatureCard, type FeatureCardData } from "./feature-card";
+import {
+  FeatureCard,
+  FeatureNumbersProvider,
+  type FeatureCardData,
+} from "./feature-card";
 import { SortableFeatureCard } from "./sortable-feature-card";
 import { AddFeatureDialog } from "./add-feature-dialog";
 import { FeatureDetailDialog } from "./feature-detail-dialog";
@@ -419,8 +423,16 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
     ? state.features.find((c) => c.id === activeId) ?? null
     : null;
 
+  // Build a per-project 1-based number map so cards/dialogs display a stable
+  // "feature N" instead of the shared-autoincrement DB id. Sorted by id asc
+  // so numbers track creation order within the project.
+  const featureNumbers = new Map<number, number>();
+  [...state.features]
+    .sort((a, b) => a.id - b.id)
+    .forEach((f, i) => featureNumbers.set(f.id, i + 1));
+
   return (
-    <>
+    <FeatureNumbersProvider value={featureNumbers}>
       <DndContext
         sensors={sensors}
         collisionDetection={collisionStrategy}
@@ -519,7 +531,7 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
           void load();
         }}
       />
-    </>
+    </FeatureNumbersProvider>
   );
 }
 

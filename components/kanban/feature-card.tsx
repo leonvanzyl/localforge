@@ -19,6 +19,42 @@ export type FeatureTestResultBadge = {
   createdAt: string;
 };
 
+/**
+ * Per-project 1-based feature numbering. The DB id is global across every
+ * project (shared autoincrement sequence), so a brand-new project's first
+ * feature can land on #165 or higher. We expose a stable per-project index
+ * for display via context so the kanban and detail dialog never surface the
+ * raw DB id.
+ */
+const FeatureNumbersContext = React.createContext<Map<number, number> | null>(
+  null,
+);
+
+export const FeatureNumbersProvider = FeatureNumbersContext.Provider;
+
+export function useFeatureNumber(featureId: number): number | null {
+  const map = React.useContext(FeatureNumbersContext);
+  return map?.get(featureId) ?? null;
+}
+
+/**
+ * Small id chip shown on every kanban card. Renders the per-project number
+ * when a {@link FeatureNumbersProvider} is in scope; otherwise falls back to
+ * the raw DB id so the DragOverlay (which renders outside the provider) and
+ * any ad-hoc usages keep working.
+ */
+function FeatureNumberChip({ feature }: { feature: { id: number } }) {
+  const displayNumber = useFeatureNumber(feature.id);
+  return (
+    <span
+      data-testid={`feature-card-id-${feature.id}`}
+      className="rounded-full border border-border px-1.5 py-0.5"
+    >
+      #{displayNumber ?? feature.id}
+    </span>
+  );
+}
+
 export type FeatureCardData = {
   id: number;
   projectId: number;
@@ -107,12 +143,7 @@ export function FeatureCard({
       )}
       <div className="mt-2 flex items-center justify-between gap-1.5 text-[10px] text-muted-foreground">
         <div className="flex items-center gap-1.5">
-          <span
-            data-testid={`feature-card-id-${feature.id}`}
-            className="rounded-full border border-border px-1.5 py-0.5"
-          >
-            #{feature.id}
-          </span>
+          <FeatureNumberChip feature={feature} />
           <span
             data-testid={`feature-card-category-${feature.id}`}
             className="rounded-full border border-border px-1.5 py-0.5"
