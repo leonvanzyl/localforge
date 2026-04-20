@@ -22,11 +22,10 @@ import {
   type FeatureRecord,
 } from "../features";
 import {
-  getDefaultLmStudioUrl,
-  getDefaultModel,
   getProject,
   markProjectCompletedIfAllDone,
 } from "../projects";
+import { getEffectiveProviderConfig } from "../settings";
 
 /**
  * Coding-agent orchestrator.
@@ -391,8 +390,9 @@ function spawnAgentRunner(args: {
   durationMs: number;
 }): ChildProcessWithoutNullStreams {
   const runnerPath = path.join(process.cwd(), "scripts", "agent-runner.mjs");
-  const lmStudioUrl = getDefaultLmStudioUrl();
-  const model = getDefaultModel();
+  const { baseUrl, model, provider } = getEffectiveProviderConfig(
+    args.session.projectId,
+  );
 
   const argv = [
     runnerPath,
@@ -408,8 +408,10 @@ function spawnAgentRunner(args: {
     args.outcome,
     "--duration-ms",
     String(args.durationMs),
-    "--lm-studio-url",
-    lmStudioUrl,
+    "--base-url",
+    baseUrl,
+    "--provider",
+    provider,
     "--model",
     model,
   ];
@@ -418,7 +420,7 @@ function spawnAgentRunner(args: {
     cwd: args.projectDir,
     env: {
       ...process.env,
-      ANTHROPIC_BASE_URL: lmStudioUrl,
+      ANTHROPIC_BASE_URL: baseUrl,
       LOCALFORGE_SESSION_ID: String(args.session.id),
       LOCALFORGE_FEATURE_ID: String(args.feature.id),
     },

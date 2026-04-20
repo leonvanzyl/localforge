@@ -10,7 +10,7 @@ import {
   agentSessions,
   agentLogs,
 } from "./db/schema";
-import { getProjectEffectiveSettings } from "./settings";
+import { getEffectiveProviderConfig } from "./settings";
 
 /**
  * Project domain helpers.
@@ -31,8 +31,6 @@ import { getProjectEffectiveSettings } from "./settings";
  */
 
 const DEFAULT_WORKING_DIR = path.join(process.cwd(), "projects");
-const DEFAULT_LM_STUDIO_URL = "http://127.0.0.1:1234";
-const DEFAULT_MODEL = "google/gemma-4-31b";
 
 /** Max length for a project name. Matches the Input maxLength in the dialog. */
 export const MAX_PROJECT_NAME_LENGTH = 120;
@@ -81,14 +79,6 @@ export function getWorkingDirectory(): string {
   return getGlobalSetting("working_directory") || DEFAULT_WORKING_DIR;
 }
 
-export function getDefaultLmStudioUrl(): string {
-  return getGlobalSetting("lm_studio_url") || DEFAULT_LM_STUDIO_URL;
-}
-
-export function getDefaultModel(): string {
-  return getGlobalSetting("model") || DEFAULT_MODEL;
-}
-
 /**
  * Parse a timestamp string stored by SQLite or by our ISO-emitting code.
  * SQLite's `CURRENT_TIMESTAMP` default yields "YYYY-MM-DD HH:MM:SS" which
@@ -119,11 +109,12 @@ function pickUniqueFolder(base: string, slug: string): string {
 function writeClaudeSettings(folderPath: string): void {
   const claudeDir = path.join(folderPath, ".claude");
   fs.mkdirSync(claudeDir, { recursive: true });
+  const { baseUrl, model } = getEffectiveProviderConfig(null);
   const settingsContent = {
     env: {
-      ANTHROPIC_BASE_URL: getDefaultLmStudioUrl(),
+      ANTHROPIC_BASE_URL: baseUrl,
     },
-    model: getDefaultModel(),
+    model,
   };
   fs.writeFileSync(
     path.join(claudeDir, "settings.json"),
@@ -141,14 +132,14 @@ function writeClaudeSettings(folderPath: string): void {
  * Idempotent: always writes the full JSON object from scratch.
  */
 export function writeProjectClaudeSettings(project: ProjectRecord): void {
-  const effective = getProjectEffectiveSettings(project.id);
+  const { baseUrl, model } = getEffectiveProviderConfig(project.id);
   const claudeDir = path.join(project.folderPath, ".claude");
   fs.mkdirSync(claudeDir, { recursive: true });
   const settingsContent = {
     env: {
-      ANTHROPIC_BASE_URL: effective.lm_studio_url,
+      ANTHROPIC_BASE_URL: baseUrl,
     },
-    model: effective.model,
+    model,
   };
   fs.writeFileSync(
     path.join(claudeDir, "settings.json"),

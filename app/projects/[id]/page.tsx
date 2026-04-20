@@ -39,7 +39,7 @@ export default async function ProjectPage({ params }: PageProps) {
 
   return (
     <div
-      className="flex flex-1 flex-col"
+      className="flex min-h-0 flex-1 flex-col"
       data-testid="project-page"
       data-project-id={project.id}
     >

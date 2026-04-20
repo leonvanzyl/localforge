@@ -9,14 +9,14 @@ import { listModels, LMStudioUnavailableError } from "@/lib/agent/lm-studio";
  * `/v1/models` endpoint. Returns the configured URL, the list of models the
  * server reports, and whether the configured model is among them.
  *
- * This is the backbone of Feature #87 ("E2E LM Studio server is reachable"):
- * a real HTTP round-trip to the local LM Studio process, with the
- * configuration coming from the same SQLite settings table the rest of the
- * app reads. Mocking this would require mocking both the SQLite settings
- * table and the LM Studio process — i.e. it would have to be obvious.
+ * Historical endpoint — kept alive for backwards compatibility and because
+ * Feature #87 ("E2E LM Studio server is reachable") asserts on the
+ * `[lm-studio] -> GET` breadcrumb that `listModels()` writes. New UI code
+ * should prefer `/api/providers/health` which reports all providers in one
+ * round-trip.
  *
  * Optional `?url=` query overrides the configured URL (useful for one-off
- * probes from the settings page in a future feature).
+ * probes from the settings page).
  */
 export async function GET(req: NextRequest) {
   const overrideUrl = req.nextUrl.searchParams.get("url");

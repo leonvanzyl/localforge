@@ -11,7 +11,7 @@ import {
 } from "@/lib/agent/feature-crud-mcp";
 import { listFeaturesForProject } from "@/lib/features";
 import { getProject } from "@/lib/projects";
-import { getProjectEffectiveSettings } from "@/lib/settings";
+import { getEffectiveProviderConfig } from "@/lib/settings";
 
 export const runtime = "nodejs";
 // Feature generation against a local model can take minutes; extend
@@ -103,7 +103,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     return NextResponse.json({ error: "Project not found" }, { status: 404 });
   }
 
-  const effective = getProjectEffectiveSettings(project.id);
+  const effective = getEffectiveProviderConfig(project.id);
   const existingBefore = listFeaturesForProject(project.id).length;
 
   const transcript = history
@@ -133,7 +133,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
         allowDangerouslySkipPermissions: true,
         env: {
           ...process.env,
-          ANTHROPIC_BASE_URL: effective.lm_studio_url,
+          ANTHROPIC_BASE_URL: effective.baseUrl,
         },
         model: effective.model,
         cwd: project.folderPath,

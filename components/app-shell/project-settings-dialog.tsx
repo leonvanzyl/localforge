@@ -18,19 +18,61 @@ import {
  *
  * The `settings` table stores global rows with `project_id = NULL` and
  * per-project overrides with a non-null `project_id`. This dialog lets the
- * user override the LM Studio URL and/or model for a single project —
- * leaving a field blank falls back to the corresponding global value.
+ * user override the local-model provider, the provider's base URL, and/or
+ * the model for a single project. Leaving a field blank falls back to the
+ * corresponding global value.
  *
  * The API call to PUT /api/projects/:id/settings accepts an empty string
- * as a signal to clear that override, so the "back to global default"
- * story is just "clear the field and save".
+ * as a signal to clear that override, so "back to global default" is just
+ * "clear the field and save".
  */
 
-type ProjectSettingsResponse = {
-  overrides: { lm_studio_url: string | null; model: string | null };
-  effective: { lm_studio_url: string; model: string };
-  defaults: { lm_studio_url: string; model: string };
+type ProviderId = "lm_studio" | "ollama";
+
+const PROVIDER_LABELS: Record<ProviderId, string> = {
+  lm_studio: "LM Studio",
+  ollama: "Ollama",
 };
+
+const PROVIDER_INSTALL_URLS: Record<ProviderId, string> = {
+  lm_studio: "https://lmstudio.ai",
+  ollama: "https://ollama.com",
+};
+
+function isProvider(value: unknown): value is ProviderId {
+  return value === "lm_studio" || value === "ollama";
+}
+
+function urlKeyFor(provider: ProviderId): "lm_studio_url" | "ollama_url" {
+  return provider === "ollama" ? "ollama_url" : "lm_studio_url";
+}
+
+type ProjectSettingsResponse = {
+  overrides: {
+    provider: string | null;
+    lm_studio_url: string | null;
+    ollama_url: string | null;
+    model: string | null;
+  };
+  effective: {
+    provider: string;
+    lm_studio_url: string;
+    ollama_url: string;
+    model: string;
+  };
+  defaults: {
+    provider: string;
+    lm_studio_url: string;
+    ollama_url: string;
+    model: string;
+  };
+};
+
+type ModelsProbe =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "ok"; models: string[] }
+  | { status: "error"; message: string };
 
 export type ProjectSettingsDialogProps = {
   open: boolean;
@@ -47,14 +89,17 @@ export function ProjectSettingsDialog({
 }: ProjectSettingsDialogProps) {
   const [loading, setLoading] = React.useState(true);
   const [data, setData] = React.useState<ProjectSettingsResponse | null>(null);
+  // Overrides edited by the user. Empty string means "clear the override".
+  const [provider, setProvider] = React.useState<string>("");
   const [lmStudioUrl, setLmStudioUrl] = React.useState("");
+  const [ollamaUrl, setOllamaUrl] = React.useState("");
   const [model, setModel] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
+  const [probe, setProbe] = React.useState<ModelsProbe>({ status: "idle" });
 
-  // Fetch current overrides + defaults whenever the dialog opens, so the
-  // user always sees the latest state.
+  // Fetch current overrides + defaults whenever the dialog opens.
   React.useEffect(() => {
     if (!open) return;
     let cancelled = false;
@@ -75,7 +120,9 @@ export function ProjectSettingsDialog({
         if (cancelled) return;
         const complete = payload as ProjectSettingsResponse;
         setData(complete);
+        setProvider(complete.overrides.provider ?? "");
         setLmStudioUrl(complete.overrides.lm_studio_url ?? "");
+        setOllamaUrl(complete.overrides.ollama_url ?? "");
         setModel(complete.overrides.model ?? "");
       } catch (err) {
         if (cancelled) return;
@@ -92,6 +139,59 @@ export function ProjectSettingsDialog({
     };
   }, [open, projectId]);
 
+  // The provider whose models we should probe = the override if set, else
+  // the currently-effective provider (which already reflects the global).
+  const effectiveProviderRaw =
+    provider || data?.effective.provider || "lm_studio";
+  const activeProvider: ProviderId = isProvider(effectiveProviderRaw)
+    ? effectiveProviderRaw
+    : "lm_studio";
+
+  const effectiveUrl = (() => {
+    if (activeProvider === "ollama") {
+      return ollamaUrl || data?.effective.ollama_url || "";
+    }
+    return lmStudioUrl || data?.effective.lm_studio_url || "";
+  })();
+
+  const debounceRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
+  React.useEffect(() => {
+    if (!open || !data || !effectiveUrl) return;
+    if (debounceRef.current) clearTimeout(debounceRef.current);
+    setProbe({ status: "loading" });
+    debounceRef.current = setTimeout(async () => {
+      try {
+        const res = await fetch(
+          `/api/providers/${activeProvider}/models?url=${encodeURIComponent(
+            effectiveUrl,
+          )}`,
+          { cache: "no-store" },
+        );
+        const payload = (await res.json()) as {
+          ok?: boolean;
+          models?: string[];
+          error?: string;
+        };
+        if (!res.ok || !payload.ok) {
+          setProbe({
+            status: "error",
+            message: payload.error ?? `Probe failed (HTTP ${res.status})`,
+          });
+          return;
+        }
+        setProbe({ status: "ok", models: payload.models ?? [] });
+      } catch (err) {
+        setProbe({
+          status: "error",
+          message: err instanceof Error ? err.message : "Probe failed",
+        });
+      }
+    }, 400);
+    return () => {
+      if (debounceRef.current) clearTimeout(debounceRef.current);
+    };
+  }, [open, data, activeProvider, effectiveUrl]);
+
   async function handleSubmit(e: React.FormEvent<HTMLFormElement>) {
     e.preventDefault();
     setSubmitting(true);
@@ -104,7 +204,9 @@ export function ProjectSettingsDialog({
         body: JSON.stringify({
           // Empty strings clear the override on the server side, falling
           // back to the global default. Anything else sets it.
+          provider,
           lm_studio_url: lmStudioUrl,
+          ollama_url: ollamaUrl,
           model,
         }),
       });
@@ -135,6 +237,19 @@ export function ProjectSettingsDialog({
     }
   }
 
+  const urlKey = urlKeyFor(activeProvider);
+  const urlValue = activeProvider === "ollama" ? ollamaUrl : lmStudioUrl;
+  const setUrlValue =
+    activeProvider === "ollama" ? setOllamaUrl : setLmStudioUrl;
+  const urlDefault =
+    activeProvider === "ollama"
+      ? data?.defaults.ollama_url ?? ""
+      : data?.defaults.lm_studio_url ?? "";
+  const urlOverridden =
+    activeProvider === "ollama"
+      ? !!data?.overrides.ollama_url
+      : !!data?.overrides.lm_studio_url;
+
   return (
     <Dialog
       open={open}
@@ -147,7 +262,7 @@ export function ProjectSettingsDialog({
       <DialogHeader>
         <DialogTitle id="project-settings-title">Project settings</DialogTitle>
         <DialogDescription>
-          Override the LM Studio URL or model for{" "}
+          Override the local-model provider, URL, or model for{" "}
           <span className="font-medium text-foreground">{projectName}</span>.
           Leave a field blank to use the global default.
         </DialogDescription>
@@ -164,31 +279,63 @@ export function ProjectSettingsDialog({
           )}
           {!loading && data && (
             <>
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="project-provider"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Provider
+                </label>
+                <select
+                  id="project-provider"
+                  name="project-provider"
+                  data-testid="project-settings-provider-select"
+                  value={provider}
+                  onChange={(e) => setProvider(e.target.value)}
+                  disabled={submitting}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <option value="">
+                    Use global default ({PROVIDER_LABELS[
+                      isProvider(data.defaults.provider)
+                        ? data.defaults.provider
+                        : "lm_studio"
+                    ]})
+                  </option>
+                  <option value="lm_studio">LM Studio</option>
+                  <option value="ollama">Ollama</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {data.overrides.provider
+                    ? "Project override is set. Choose 'Use global default' to clear."
+                    : "Using the global default. Pick a provider to override."}
+                </p>
+              </div>
               <Field
-                label="LM Studio URL"
-                id="project-lm_studio_url"
-                value={lmStudioUrl}
-                onChange={setLmStudioUrl}
-                placeholder={data.defaults.lm_studio_url}
+                label={`${PROVIDER_LABELS[activeProvider]} URL`}
+                id={`project-${urlKey}`}
+                value={urlValue}
+                onChange={setUrlValue}
+                placeholder={urlDefault}
                 disabled={submitting}
                 description={
-                  data.overrides.lm_studio_url
+                  urlOverridden
                     ? "Project override is set. Clear to fall back to the global default."
                     : "Using the global default. Type a value to override."
                 }
               />
-              <Field
-                label="Model"
-                id="project-model"
-                value={model}
+              <ProviderProbeStatus
+                provider={activeProvider}
+                probe={probe}
+              />
+              <ModelField
+                probe={probe}
+                provider={activeProvider}
+                model={model}
                 onChange={setModel}
                 placeholder={data.defaults.model}
                 disabled={submitting}
-                description={
-                  data.overrides.model
-                    ? "Project override is set. Clear to fall back to the global default."
-                    : "Using the global default. Type a value to override."
-                }
+                overridden={!!data.overrides.model}
               />
               <div
                 data-testid="project-settings-effective"
@@ -198,7 +345,28 @@ export function ProjectSettingsDialog({
                   Currently effective
                 </p>
                 <p className="mt-1">
-                  URL: <span>{data.effective.lm_studio_url}</span>
+                  Provider:{" "}
+                  <span>
+                    {PROVIDER_LABELS[
+                      isProvider(data.effective.provider)
+                        ? data.effective.provider
+                        : "lm_studio"
+                    ]}
+                  </span>
+                </p>
+                <p>
+                  URL:{" "}
+                  <span>
+                    {
+                      data.effective[
+                        urlKeyFor(
+                          isProvider(data.effective.provider)
+                            ? data.effective.provider
+                            : "lm_studio",
+                        )
+                      ]
+                    }
+                  </span>
                 </p>
                 <p>
                   Model: <span>{data.effective.model}</span>
@@ -244,6 +412,135 @@ export function ProjectSettingsDialog({
         </DialogFooter>
       </form>
     </Dialog>
+  );
+}
+
+function ProviderProbeStatus({
+  provider,
+  probe,
+}: {
+  provider: ProviderId;
+  probe: ModelsProbe;
+}) {
+  const label = PROVIDER_LABELS[provider];
+  if (probe.status === "loading") {
+    return (
+      <p
+        data-testid="project-settings-provider-status"
+        className="text-xs text-muted-foreground"
+      >
+        Checking {label}…
+      </p>
+    );
+  }
+  if (probe.status === "ok") {
+    return (
+      <p
+        data-testid="project-settings-provider-status"
+        data-provider-ok="true"
+        className="text-xs text-green-500"
+      >
+        {label} reachable — {probe.models.length} model
+        {probe.models.length === 1 ? "" : "s"} available.
+      </p>
+    );
+  }
+  if (probe.status === "error") {
+    return (
+      <div
+        data-testid="project-settings-provider-status"
+        data-provider-ok="false"
+        className="rounded-md border border-dashed border-border bg-muted/40 p-2 text-xs text-muted-foreground"
+      >
+        <p className="font-medium text-foreground">{label} not detected</p>
+        <p className="mt-0.5">
+          Install from{" "}
+          <a
+            href={PROVIDER_INSTALL_URLS[provider]}
+            target="_blank"
+            rel="noreferrer"
+            className="underline"
+          >
+            {PROVIDER_INSTALL_URLS[provider].replace(/^https?:\/\//, "")}
+          </a>
+          . Details: {probe.message}
+        </p>
+      </div>
+    );
+  }
+  return null;
+}
+
+function ModelField({
+  probe,
+  provider,
+  model,
+  onChange,
+  placeholder,
+  disabled,
+  overridden,
+}: {
+  probe: ModelsProbe;
+  provider: ProviderId;
+  model: string;
+  onChange: (v: string) => void;
+  placeholder: string;
+  disabled?: boolean;
+  overridden: boolean;
+}) {
+  if (probe.status === "ok" && probe.models.length > 0) {
+    const known = probe.models.includes(model);
+    return (
+      <div className="flex flex-col gap-1">
+        <label
+          htmlFor="project-model"
+          className="text-sm font-medium text-foreground"
+        >
+          Model
+        </label>
+        <select
+          id="project-model"
+          name="project-model"
+          data-testid="project-settings-model-select"
+          value={known ? model : ""}
+          onChange={(e) => onChange(e.target.value)}
+          disabled={disabled}
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+        >
+          <option value="">
+            {overridden ? "Use global default" : `Use global default (${placeholder})`}
+          </option>
+          {probe.models.map((m) => (
+            <option key={m} value={m}>
+              {m}
+            </option>
+          ))}
+        </select>
+        <p className="text-xs text-muted-foreground">
+          {overridden
+            ? "Project override is set. Choose 'Use global default' to clear."
+            : `Models detected on the ${PROVIDER_LABELS[provider]} server.`}
+        </p>
+      </div>
+    );
+  }
+
+  return (
+    <Field
+      label="Model"
+      id="project-model"
+      value={model}
+      onChange={onChange}
+      placeholder={placeholder}
+      disabled={disabled}
+      description={
+        overridden
+          ? "Project override is set. Clear to fall back to the global default."
+          : probe.status === "error"
+            ? "Provider unreachable — type a model id or fix the URL above."
+            : "Using the global default. Type a value to override."
+      }
+    />
   );
 }
 

@@ -29,7 +29,8 @@
  *   --project-dir <s>   absolute path to the project folder on disk
  *   --outcome <s>       "success" (default) | "failure"
  *   --duration-ms <n>   total runtime before exit (default 2500)
- *   --lm-studio-url <s> Claude Agent SDK ANTHROPIC_BASE_URL (informational)
+ *   --base-url <s>      Claude Agent SDK ANTHROPIC_BASE_URL (informational)
+ *   --provider <s>      active local-model provider (e.g. "lm_studio", "ollama")
  *   --model <s>         model name (informational)
  */
 
@@ -50,26 +51,25 @@ const HARNESS_ROOT = path.resolve(
 );
 
 /**
- * Feature #94: make a real inference request to LM Studio so the local model
- * server logs show traffic coming from every coding session. The runner is
- * still a stubbed agent (doesn't actually write production code yet) but the
- * request is genuine — LM Studio receives it, the model produces tokens, and
- * the reply is echoed into the SSE log stream so the UI can show the plan
- * live.
+ * Feature #94: make a real inference request to the active local-model
+ * provider (LM Studio or Ollama) so its server logs show traffic coming from
+ * every coding session. Both providers expose an OpenAI-compatible
+ * `/v1/chat/completions` endpoint, so this single code path covers both.
  *
  * Returns an object `{ ok, text, error }`. Never throws; a network/model
  * failure just logs an error event and the runner continues with the
  * simulated steps so the test harness (and force-stop tests) stay reliable.
  *
  * Respects env vars:
- *   ANTHROPIC_BASE_URL - the LM Studio OpenAI-compatible base (e.g.
- *                       http://127.0.0.1:1234). Required; a missing/empty
- *                       value short-circuits with ok:false.
+ *   ANTHROPIC_BASE_URL - the OpenAI-compatible base (e.g.
+ *                       http://127.0.0.1:1234 for LM Studio or
+ *                       http://127.0.0.1:11434 for Ollama). Required;
+ *                       a missing/empty value short-circuits with ok:false.
  *   LOCALFORGE_DISABLE_LM_STUDIO - when "1"/"true" skip the call entirely.
  *                       Used by unit tests that don't want network IO.
  *   LOCALFORGE_LM_STUDIO_TIMEOUT_MS - request abort deadline, default 60000.
  */
-async function callLmStudioForPlan({ baseUrl, model, featureTitle, featureId }) {
+async function callLocalModelForPlan({ baseUrl, model, featureTitle, featureId }) {
   const disabled =
     process.env.LOCALFORGE_DISABLE_LM_STUDIO === "1" ||
     process.env.LOCALFORGE_DISABLE_LM_STUDIO === "true";
@@ -79,7 +79,7 @@ async function callLmStudioForPlan({ baseUrl, model, featureTitle, featureId }) 
   const rawBase = baseUrl || process.env.ANTHROPIC_BASE_URL || "";
   const trimmed = rawBase.replace(/\/+$/, "");
   if (!trimmed) {
-    return { ok: false, error: "no LM Studio URL configured" };
+    return { ok: false, error: "no local-model base URL configured" };
   }
   const endpoint = /\/v1\/chat\/completions$/i.test(trimmed)
     ? trimmed
@@ -126,7 +126,7 @@ async function callLmStudioForPlan({ baseUrl, model, featureTitle, featureId }) 
       const body = await res.text().catch(() => "");
       return {
         ok: false,
-        error: `LM Studio HTTP ${res.status}: ${body.slice(0, 200)}`,
+        error: `Local model HTTP ${res.status}: ${body.slice(0, 200)}`,
       };
     }
     const json = await res.json();
@@ -144,7 +144,7 @@ async function callLmStudioForPlan({ baseUrl, model, featureTitle, featureId }) 
   } catch (err) {
     const msg =
       err?.name === "AbortError"
-        ? `LM Studio request aborted after ${timeoutMs}ms`
+        ? `Local model request aborted after ${timeoutMs}ms`
         : err?.message || String(err);
     return { ok: false, error: msg };
   } finally {
@@ -353,34 +353,35 @@ async function main() {
   const projectDir = args["project-dir"] ?? process.cwd();
   const outcome = args["outcome"] === "failure" ? "failure" : "success";
   const durationMs = Number.parseInt(args["duration-ms"] ?? "2500", 10);
-  const lmStudioUrl = args["lm-studio-url"] ?? "";
+  const baseUrl = args["base-url"] ?? args["lm-studio-url"] ?? "";
+  const provider = args["provider"] ?? "lm_studio";
   const model = args["model"] ?? "";
 
   emitLog(
     `Starting coding agent for feature #${featureId}: "${featureTitle}"`,
     "info",
   );
-  if (lmStudioUrl) {
+  if (baseUrl) {
     emitLog(
-      `Using local model ${model || "(default)"} via ${lmStudioUrl}`,
+      `Using local model ${model || "(default)"} via ${baseUrl} (${provider})`,
       "info",
     );
   }
   emitLog(`Working directory: ${projectDir}`, "info");
 
-  // Feature #94: genuine inference request against LM Studio so the local
-  // server registers this session's traffic and the UI can show the plan
-  // live. We do this BEFORE the simulated edit/test loop so the plan tokens
-  // appear early in the activity panel. Failures are non-fatal — the runner
-  // continues with its deterministic steps so force-stop and quick-success
-  // tests stay reliable.
+  // Feature #94: genuine inference request against the active local-model
+  // server (LM Studio or Ollama) so its logs register this session's traffic
+  // and the UI can show the plan live. We do this BEFORE the simulated
+  // edit/test loop so the plan tokens appear early in the activity panel.
+  // Failures are non-fatal — the runner continues with its deterministic
+  // steps so force-stop and quick-success tests stay reliable.
   emitLog(
     `Requesting implementation plan from local model for "${featureTitle}"`,
     "action",
   );
   const planStart = Date.now();
-  const plan = await callLmStudioForPlan({
-    baseUrl: lmStudioUrl,
+  const plan = await callLocalModelForPlan({
+    baseUrl,
     model,
     featureTitle,
     featureId,
@@ -388,7 +389,7 @@ async function main() {
   const planMs = Date.now() - planStart;
   if (plan.skipped) {
     emitLog(
-      `LM Studio call skipped (LOCALFORGE_DISABLE_LM_STUDIO set)`,
+      `Local model call skipped (LOCALFORGE_DISABLE_LM_STUDIO set)`,
       "info",
     );
   } else if (plan.ok && plan.text) {

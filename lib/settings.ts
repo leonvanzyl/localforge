@@ -3,6 +3,10 @@ import { eq, isNull, and } from "drizzle-orm";
 import path from "node:path";
 import { db } from "./db";
 import { settings } from "./db/schema";
+import {
+  isProviderId,
+  type ProviderId,
+} from "./agent/providers/types";
 
 /**
  * Global settings helpers backed by the `settings` SQLite table.
@@ -12,13 +16,15 @@ import { settings } from "./db/schema";
  * surfaced by {@link getProjectSettings} / {@link updateProjectSettings}.
  *
  * This module is the single source of truth for reading/writing the
- * LM Studio URL, default model, and working directory. The values are
- * persisted in SQLite so they survive restarts (required by Feature
- * "Data persists across server restart").
+ * provider, each provider's base URL, the default model, and the working
+ * directory. The values are persisted in SQLite so they survive restarts
+ * (required by Feature "Data persists across server restart").
  */
 
 export const GLOBAL_SETTING_KEYS = [
+  "provider",
   "lm_studio_url",
+  "ollama_url",
   "model",
   "working_directory",
 ] as const;
@@ -28,13 +34,20 @@ export const GLOBAL_SETTING_KEYS = [
  * is global-only because it controls where new project folders get created
  * on disk — overriding it per-project would be paradoxical.
  */
-export const PROJECT_SETTING_KEYS = ["lm_studio_url", "model"] as const;
+export const PROJECT_SETTING_KEYS = [
+  "provider",
+  "lm_studio_url",
+  "ollama_url",
+  "model",
+] as const;
 
 export type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
 export type ProjectSettingKey = (typeof PROJECT_SETTING_KEYS)[number];
 
 export const DEFAULT_GLOBAL_SETTINGS: Record<GlobalSettingKey, string> = {
+  provider: "lm_studio",
   lm_studio_url: "http://127.0.0.1:1234",
+  ollama_url: "http://127.0.0.1:11434",
   model: "google/gemma-4-31b",
   working_directory: path.join(process.cwd(), "projects"),
 };
@@ -77,18 +90,31 @@ export function getGlobalSettings(): GlobalSettingsShape {
 
 export type UpdateGlobalSettingsInput = Partial<GlobalSettingsShape>;
 
-function validate(input: UpdateGlobalSettingsInput): string | null {
-  if (input.lm_studio_url !== undefined) {
-    const v = input.lm_studio_url.trim();
-    if (!v) return "LM Studio URL cannot be empty";
-    try {
-      const url = new URL(v);
-      if (!["http:", "https:"].includes(url.protocol)) {
-        return "LM Studio URL must use http or https";
-      }
-    } catch {
-      return "LM Studio URL is not a valid URL";
+function validateUrl(label: string, raw: string): string | null {
+  const v = raw.trim();
+  if (!v) return `${label} cannot be empty`;
+  try {
+    const url = new URL(v);
+    if (!["http:", "https:"].includes(url.protocol)) {
+      return `${label} must use http or https`;
     }
+  } catch {
+    return `${label} is not a valid URL`;
+  }
+  return null;
+}
+
+function validate(input: UpdateGlobalSettingsInput): string | null {
+  if (input.provider !== undefined && !isProviderId(input.provider)) {
+    return "Provider must be one of: lm_studio, ollama";
+  }
+  if (input.lm_studio_url !== undefined) {
+    const err = validateUrl("LM Studio URL", input.lm_studio_url);
+    if (err) return err;
+  }
+  if (input.ollama_url !== undefined) {
+    const err = validateUrl("Ollama URL", input.ollama_url);
+    if (err) return err;
   }
   if (input.model !== undefined && !input.model.trim()) {
     return "Model name cannot be empty";
@@ -206,18 +232,18 @@ export type UpdateProjectSettingsInput = Partial<
 >;
 
 function validateProjectInput(input: UpdateProjectSettingsInput): string | null {
-  if (input.lm_studio_url) {
-    const v = input.lm_studio_url.trim();
-    if (v) {
-      try {
-        const url = new URL(v);
-        if (!["http:", "https:"].includes(url.protocol)) {
-          return "LM Studio URL must use http or https";
-        }
-      } catch {
-        return "LM Studio URL is not a valid URL";
-      }
+  if (input.provider) {
+    if (!isProviderId(input.provider)) {
+      return "Provider must be one of: lm_studio, ollama";
     }
+  }
+  if (input.lm_studio_url) {
+    const err = validateUrl("LM Studio URL", input.lm_studio_url);
+    if (err) return err;
+  }
+  if (input.ollama_url) {
+    const err = validateUrl("Ollama URL", input.ollama_url);
+    if (err) return err;
   }
   // model accepts any non-empty string, or empty/null to clear.
   return null;
@@ -240,4 +266,42 @@ export function updateProjectSettings(
     }
   }
   return getProjectOverrides(projectId);
+}
+
+/* ------------------------------ Provider helpers ------------------------- */
+
+/**
+ * URL-setting key for a given provider id. Kept in one place so callers
+ * don't sprinkle `provider === "ollama" ? "ollama_url" : "lm_studio_url"`
+ * through the codebase.
+ */
+export function baseUrlKeyForProvider(
+  provider: ProviderId,
+): Extract<GlobalSettingKey, "lm_studio_url" | "ollama_url"> {
+  return provider === "ollama" ? "ollama_url" : "lm_studio_url";
+}
+
+/**
+ * Resolve the active provider and its base URL, either globally or for a
+ * specific project (when a projectId is passed, project overrides take
+ * precedence over globals via {@link getProjectEffectiveSettings}).
+ *
+ * Consumed by the orchestrator and by the on-disk `.claude/settings.json`
+ * writer so those two stay provider-aware without each having to know the
+ * shape of the settings table.
+ */
+export function getEffectiveProviderConfig(
+  projectId: number | null,
+): { provider: ProviderId; baseUrl: string; model: string } {
+  const globals = getGlobalSettings();
+  const overrides =
+    projectId == null ? null : getProjectOverrides(projectId);
+  const pick = (key: ProjectSettingKey): string =>
+    overrides?.[key] ?? globals[key];
+
+  const providerRaw = pick("provider");
+  const provider: ProviderId = isProviderId(providerRaw) ? providerRaw : "lm_studio";
+  const baseUrl = pick(baseUrlKeyForProvider(provider));
+  const model = pick("model");
+  return { provider, baseUrl, model };
 }

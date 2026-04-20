@@ -8,7 +8,7 @@ import {
   streamChatCompletion,
   type LMStudioChatMessage,
 } from "@/lib/agent/lm-studio";
-import { getGlobalSettings } from "@/lib/settings";
+import { getEffectiveProviderConfig } from "@/lib/settings";
 
 type RouteContext = { params: Promise<{ id: string }> };
 
@@ -123,7 +123,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
     })),
   ];
 
-  const settings = getGlobalSettings();
+  const providerConfig = getEffectiveProviderConfig(session.projectId);
 
   const encoder = new TextEncoder();
   const stream = new ReadableStream<Uint8Array>({
@@ -140,8 +140,8 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
       let errored = false;
       try {
         for await (const evt of streamChatCompletion({
-          baseUrl: settings.lm_studio_url,
-          model: settings.model,
+          baseUrl: providerConfig.baseUrl,
+          model: providerConfig.model,
           messages: llmMessages,
           signal: req.signal,
         })) {

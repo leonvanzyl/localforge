@@ -47,7 +47,9 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
     overrides,
     effective,
     defaults: {
+      provider: globals.provider,
       lm_studio_url: globals.lm_studio_url,
+      ollama_url: globals.ollama_url,
       model: globals.model,
     },
   });
@@ -56,7 +58,12 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
 /**
  * PUT /api/projects/:id/settings
  *
- * Body (JSON): Partial<{ lm_studio_url: string | null, model: string | null }>
+ * Body (JSON): Partial<{
+ *   provider: "lm_studio" | "ollama" | null,
+ *   lm_studio_url: string | null,
+ *   ollama_url: string | null,
+ *   model: string | null,
+ * }>
  *   - Non-empty string sets the override for that key.
  *   - Empty string or explicit null clears the override (falls back to global).
  *   - Omitting the key leaves the existing override unchanged.
