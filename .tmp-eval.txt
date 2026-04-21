@@ -1,1 +1,0 @@
-() => ({ card: document.querySelector('[data-testid="sortable-feature-card-78"]').getBoundingClientRect(), body: document.querySelector('[data-testid="kanban-column-body-in_progress"]').getBoundingClientRect(), section: document.querySelector('[data-testid="kanban-column-in_progress"]').getBoundingClientRect(), viewport: { w: window.innerWidth, h: window.innerHeight } })

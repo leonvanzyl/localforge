@@ -36,7 +36,7 @@ cd localforge
 ./init.sh
 ```
 
-Open <http://localhost:3000> and follow the in-app flow to create your first
+Open <http://localhost:7777> and follow the in-app flow to create your first
 project.
 
 ### Useful scripts

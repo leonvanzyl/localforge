@@ -2,7 +2,7 @@
 // so a human (or playwright) can verify the UI's Stop button terminates
 // the running agent. Prints the project id + session id for navigation.
 const http = require("node:http");
-const BASE = "http://localhost:3000";
+const BASE = "http://localhost:7777";
 
 function request(method, path, body) {
   return new Promise((resolve, reject) => {

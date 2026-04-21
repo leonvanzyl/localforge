@@ -44,7 +44,7 @@
  *                             the floor has to be generous.
  *   LOCALFORGE_PLAYWRIGHT_BASE_URL
  *                             baseURL the post-run verification Playwright
- *                             run navigates to. Defaults to http://localhost:3000.
+ *                             run navigates to. Defaults to http://localhost:7777.
  */
 
 import fs from "node:fs";
@@ -218,7 +218,7 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
     };
   }
 
-  const baseUrl = process.env.LOCALFORGE_PLAYWRIGHT_BASE_URL || "http://localhost:3000";
+  const baseUrl = process.env.LOCALFORGE_PLAYWRIGHT_BASE_URL || "http://localhost:7777";
   let browser = null;
   try {
     browser = await chromium.launch({ headless: true });
@@ -260,8 +260,8 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
   }
 }
 
-function buildCodingSystemPrompt(projectDir) {
-  return `You are LocalForge's coding agent.
+function buildCodingSystemPrompt(projectDir, additionalInstructions) {
+  const base = `You are LocalForge's coding agent.
 
 You have been handed ONE backlog feature for a local project. Implement it
 end-to-end using the tools available (Read, Write, Edit, Bash, Grep, Glob).
@@ -290,20 +290,32 @@ Rules:
 - Do NOT ask the user questions. Make reasonable assumptions and note them
   in your final reply.
 - Do NOT invent files you have not read. Always Read before you Edit.`;
+
+  if (additionalInstructions && additionalInstructions.trim()) {
+    return base + `\n\nAdditional project-specific instructions:\n${additionalInstructions.trim()}`;
+  }
+  return base;
 }
 
 /**
- * Workspace guard: a `canUseTool` callback that denies any file-writing or
- * shell-escape that would modify paths outside the project directory. This
- * is the enforcement layer — the system prompt tells the model the rule,
- * but we do not trust a local model to follow it.
+ * Workspace guard: a `PreToolUse` hook that denies any file-writing or
+ * shell-escape whose target path is outside the project directory. This is
+ * the enforcement layer — the system prompt tells the model the rule, but
+ * we do not trust a local model to follow it.
+ *
+ * We use a PreToolUse hook (not a `canUseTool` callback) because hooks run
+ * regardless of `permissionMode`, which lets us keep `bypassPermissions`
+ * for the rest of the SDK's default rules. With `canUseTool` alone the SDK
+ * would still route absolute-path Writes through its built-in permission
+ * checks before reaching our callback, which was causing all Writes to be
+ * denied even when we wanted to allow them.
  *
  * Read-only tools (Read, Grep, Glob, WebFetch, WebSearch, ...) are allowed
- * unconditionally so the agent can still consult config in the harness dir
- * if it wants to. Bash is the most fuzzy — we scan its command string for
+ * unconditionally so the agent can consult config above the project dir if
+ * it wants to. Bash is the fuzzy case — we scan its command string for
  * absolute paths that resolve outside the root and deny on a match.
  */
-function makeWorkspaceGuard(projectDir, onDenied) {
+function makeWorkspaceGuardHook(projectDir, onDenied) {
   const root = path.resolve(projectDir);
 
   function isInsideRoot(candidate) {
@@ -319,33 +331,24 @@ function makeWorkspaceGuard(projectDir, onDenied) {
   // the second `/` of `http://...` or the `/x` inside `./x`.
   const ABS_PATH_RE = /(?<=^|[\s;&|(])(?:[a-zA-Z]:[\\/]|\/)[^\s"'`<>|;&]+/g;
 
-  return async function canUseTool(toolName, input) {
+  function check(toolName, input) {
     if (
       toolName === "Write" ||
       toolName === "Edit" ||
       toolName === "NotebookEdit"
     ) {
       const raw = input?.file_path ?? input?.notebook_path ?? input?.path;
-      if (typeof raw !== "string" || raw.length === 0) {
-        return { behavior: "allow" };
-      }
+      if (typeof raw !== "string" || raw.length === 0) return null;
       if (!isInsideRoot(raw)) {
         const resolved = path.resolve(root, raw);
-        const msg = `Refused: ${toolName} to ${resolved} is outside the workspace ${root}. Use a path inside the workspace.`;
-        onDenied?.(toolName, msg);
-        return { behavior: "deny", message: msg };
+        return `${toolName} to ${resolved} is outside the workspace ${root}. Use a path inside the workspace.`;
       }
-      return { behavior: "allow" };
+      return null;
     }
 
     if (toolName === "Bash") {
       const cmd = String(input?.command ?? "");
-      if (!cmd) return { behavior: "allow" };
-      // Quick escape detection: any absolute path token that falls outside
-      // the workspace. This is a heuristic — a determined model could still
-      // bypass it with clever shell quoting — but it stops the common cases
-      // (direct `rm C:\...`, `cp ... /etc/...`, `cd ..`-to-elsewhere plus
-      // relative ops). URLs are skipped so `curl https://...` keeps working.
+      if (!cmd) return null;
       let m;
       ABS_PATH_RE.lastIndex = 0;
       while ((m = ABS_PATH_RE.exec(cmd)) !== null) {
@@ -367,17 +370,32 @@ function makeWorkspaceGuard(projectDir, onDenied) {
           continue;
         }
         if (!isInsideRoot(raw)) {
-          const msg = `Refused: Bash command references ${raw} which is outside the workspace ${root}. Use paths inside the workspace.`;
-          onDenied?.(toolName, msg);
-          return { behavior: "deny", message: msg };
+          return `Bash command references ${raw} which is outside the workspace ${root}. Use paths inside the workspace.`;
         }
       }
-      return { behavior: "allow" };
+      return null;
     }
 
-    // Every other tool (Read, Grep, Glob, WebFetch, WebSearch, ...) is safe
-    // to allow. We care about modifications, not reads.
-    return { behavior: "allow" };
+    // Read/Grep/Glob/WebFetch/WebSearch/... — we care about modifications,
+    // not reads.
+    return null;
+  }
+
+  return async function preToolUseHook(input) {
+    if (input?.hook_event_name !== "PreToolUse") {
+      return { continue: true };
+    }
+    const reason = check(input.tool_name, input.tool_input);
+    if (!reason) return { continue: true };
+    onDenied?.(input.tool_name, reason);
+    return {
+      continue: true,
+      hookSpecificOutput: {
+        hookEventName: "PreToolUse",
+        permissionDecision: "deny",
+        permissionDecisionReason: reason,
+      },
+    };
   };
 }
 
@@ -410,15 +428,18 @@ function readFeaturePromptFile(promptFile) {
   }
 }
 
-async function runCodingAgent({ feature, projectDir, baseUrl, model, abort }) {
+async function runCodingAgent({ feature, projectDir, baseUrl, model, abort, coderPrompt }) {
   const maxTurns = Number.parseInt(
-    process.env.LOCALFORGE_MAX_TURNS ?? "100",
+    process.env.LOCALFORGE_MAX_TURNS ?? "1000",
     10,
   );
   const userPrompt = buildUserPrompt(feature);
-  const canUseTool = makeWorkspaceGuard(projectDir, (toolName, message) => {
-    emitLog(`Blocked ${toolName}: ${message}`, "error");
-  });
+  const workspaceHook = makeWorkspaceGuardHook(
+    projectDir,
+    (toolName, message) => {
+      emitLog(`Blocked ${toolName}: ${message}`, "error");
+    },
+  );
 
   let toolCalls = 0;
   let lastAssistantText = "";
@@ -429,14 +450,19 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort }) {
     for await (const message of query({
       prompt: userPrompt,
       options: {
-        systemPrompt: buildCodingSystemPrompt(projectDir),
-        // `default` mode + `canUseTool` lets our callback gate every tool
-        // call. Previously we used `bypassPermissions`, which skipped the
-        // callback entirely — that is what let a local model write
-        // `C:\claude-code\package.json` from a session rooted at a project
-        // subfolder. Never again.
-        permissionMode: "default",
-        canUseTool,
+        systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt),
+        // We keep `bypassPermissions` so the SDK's own default allowlist
+        // doesn't refuse absolute-path Writes to the project folder (which
+        // it was doing in `default` mode and breaking every scaffold run).
+        // The workspace boundary is enforced by the PreToolUse hook below
+        // — hooks run regardless of permission mode and carry a `deny`
+        // decision back to the model, so a local model still can't escape
+        // the project directory.
+        permissionMode: "bypassPermissions",
+        allowDangerouslySkipPermissions: true,
+        hooks: {
+          PreToolUse: [{ hooks: [workspaceHook] }],
+        },
         env: {
           ...process.env,
           ANTHROPIC_BASE_URL: baseUrl,
@@ -499,6 +525,7 @@ async function main() {
     description: fileFeature?.description ?? null,
     acceptanceCriteria: fileFeature?.acceptanceCriteria ?? null,
   };
+  const coderPrompt = fileFeature?.coderPrompt ?? "";
 
   emitLog(
     `Starting Claude Agent SDK session for feature #${featureId}: "${feature.title}"`,
@@ -543,6 +570,7 @@ async function main() {
     baseUrl,
     model,
     abort,
+    coderPrompt,
   });
   const codingMs = Date.now() - codingStart;
 

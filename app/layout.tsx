@@ -3,7 +3,6 @@ import "./globals.css";
 import { AppShell } from "@/components/app-shell/app-shell";
 import {
   DEFAULT_THEME,
-  THEME_INIT_SCRIPT,
   ThemeProvider,
 } from "@/components/theme/theme-provider";
 
@@ -31,10 +30,7 @@ export default function RootLayout({
       suppressHydrationWarning
     >
       <head>
-        <script
-          // eslint-disable-next-line react/no-danger
-          dangerouslySetInnerHTML={{ __html: THEME_INIT_SCRIPT }}
-        />
+        <script src="/theme-init.js" />
       </head>
       <body className="h-screen overflow-hidden bg-background text-foreground antialiased">
         <ThemeProvider>

@@ -1,10 +1,10 @@
-// Kill any process listening on a given TCP port (default 3000) on Windows.
+// Kill any process listening on a given TCP port (default 7777) on Windows.
 // Used during development / verification to fully restart the dev server
 // because pkill / lsof are unavailable in this Git Bash environment.
 
 const { execSync } = require("node:child_process");
 
-const port = Number(process.argv[2] || 3000);
+const port = Number(process.argv[2] || 7777);
 
 let lines = "";
 try {

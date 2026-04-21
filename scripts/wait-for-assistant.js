@@ -27,7 +27,7 @@ const deadline = start + timeoutSec * 1000;
 function fetchMessages() {
   return new Promise((resolve, reject) => {
     const req = http.get(
-      `http://localhost:3000/api/agent-sessions/${sessionId}/messages`,
+      `http://localhost:7777/api/agent-sessions/${sessionId}/messages`,
       (res) => {
         let data = "";
         res.on("data", (c) => (data += c));

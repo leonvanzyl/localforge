@@ -8,7 +8,7 @@ if (!projectId) {
 function fetchJson(path) {
   return new Promise((resolve, reject) => {
     http
-      .get(`http://localhost:3000${path}`, (res) => {
+      .get(`http://localhost:7777${path}`, (res) => {
         let buf = "";
         res.setEncoding("utf8");
         res.on("data", (c) => (buf += c));

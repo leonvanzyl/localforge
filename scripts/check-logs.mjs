@@ -9,7 +9,7 @@ if (!Number.isFinite(featureId) || featureId <= 0) {
   process.exit(1);
 }
 
-const res = await fetch(`http://localhost:3000/api/features/${featureId}/logs`);
+const res = await fetch(`http://localhost:7777/api/features/${featureId}/logs`);
 const data = await res.json();
 const logs = data.logs ?? [];
 const byType = new Map();

@@ -27,7 +27,7 @@ import {
   getProject,
   markProjectCompletedIfAllDone,
 } from "../projects";
-import { getEffectiveProviderConfig } from "../settings";
+import { getEffectiveProviderConfig, getProjectEffectiveSettings } from "../settings";
 
 /**
  * Coding-agent orchestrator.
@@ -373,6 +373,8 @@ function spawnAgentRunner(args: {
   const { baseUrl, model, provider } = getEffectiveProviderConfig(
     args.session.projectId,
   );
+  const effectiveSettings = getProjectEffectiveSettings(args.session.projectId);
+  const coderPrompt = effectiveSettings.coder_prompt || "";
 
   // Write the feature context to a temp JSON file so the runner can read
   // long descriptions and acceptance criteria without argv escaping pain.
@@ -388,6 +390,7 @@ function spawnAgentRunner(args: {
         title: args.feature.title,
         description: args.feature.description,
         acceptanceCriteria: args.feature.acceptanceCriteria,
+        coderPrompt,
       },
       null,
       2,

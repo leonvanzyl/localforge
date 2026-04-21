@@ -9,7 +9,7 @@
 const { test, expect } = require("@playwright/test");
 const http = require("node:http");
 
-const BASE = "http://localhost:3000";
+const BASE = "http://localhost:7777";
 
 function httpReq(method, path, body) {
   return new Promise((resolve, reject) => {

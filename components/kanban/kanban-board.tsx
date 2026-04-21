@@ -31,7 +31,6 @@ import {
 import { SortableFeatureCard } from "./sortable-feature-card";
 import { AddFeatureDialog } from "./add-feature-dialog";
 import { FeatureDetailDialog } from "./feature-detail-dialog";
-import { DependencyLines } from "./dependency-lines";
 import { cn } from "@/lib/utils";
 
 /**
@@ -468,17 +467,6 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
               />
             );
           })}
-          {/*
-            Feature #52: overlay SVG that draws connector lines between
-            features with dependencies. Rendered last so it sits on top of
-            the columns; `pointer-events: none` is applied inside the
-            component so it never blocks card clicks or drags.
-          */}
-          <DependencyLines
-            containerRef={boardRef}
-            features={state.features}
-            draggingId={activeId}
-          />
         </div>
 
         <DragOverlay dropAnimation={null}>

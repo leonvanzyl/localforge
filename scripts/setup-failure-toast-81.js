@@ -5,7 +5,7 @@
 // the browser can be open BEFORE the failure event fires (SSE listeners need
 // the page mounted to receive the status event).
 const http = require("node:http");
-const BASE = "http://localhost:3000";
+const BASE = "http://localhost:7777";
 
 function request(method, path, body) {
   return new Promise((resolve, reject) => {

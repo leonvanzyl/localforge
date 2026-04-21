@@ -2,7 +2,7 @@
 /**
  * Programmatic Playwright verification for the batch of features
  * #77 (test badge), #79 (screenshot gallery + lightbox), #54 (no
- * double-submit). Drives the running Next.js dev server on :3000.
+ * double-submit). Drives the running Next.js dev server on :7777.
  *
  * Writes up to four screenshots under <repo>/screenshots/ named
  * "batch-77-79-54-*.png" for manual inspection.
@@ -13,7 +13,7 @@ import fs from "node:fs";
 import { fileURLToPath } from "node:url";
 
 const root = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..");
-const baseUrl = "http://localhost:3000";
+const baseUrl = "http://localhost:7777";
 const projectId = 64;
 const passFeatureId = 102;
 const failFeatureId = 114;

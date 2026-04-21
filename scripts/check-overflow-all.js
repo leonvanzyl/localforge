@@ -1,7 +1,7 @@
 /**
  * Feature #18 verification: "No horizontal scroll on any viewport."
  *
- * Visits http://localhost:3000/ , /settings, and two /projects/:id pages at
+ * Visits http://localhost:7777/ , /settings, and two /projects/:id pages at
  * three viewport sizes (375, 768, 1920) and reports:
  *   1. document.documentElement.scrollWidth vs window.innerWidth
  *   2. any element whose bounding box extends past the viewport's right edge
@@ -16,10 +16,10 @@
 const { chromium } = require("playwright");
 
 const URLS = [
-  { label: "home", url: "http://localhost:3000/" },
-  { label: "settings", url: "http://localhost:3000/settings" },
-  { label: "kanban-8", url: "http://localhost:3000/projects/8" },
-  { label: "kanban-10", url: "http://localhost:3000/projects/10" },
+  { label: "home", url: "http://localhost:7777/" },
+  { label: "settings", url: "http://localhost:7777/settings" },
+  { label: "kanban-8", url: "http://localhost:7777/projects/8" },
+  { label: "kanban-10", url: "http://localhost:7777/projects/10" },
 ];
 
 const VIEWPORTS = [

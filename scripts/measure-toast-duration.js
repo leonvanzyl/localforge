@@ -7,7 +7,7 @@ const projectId = Number.parseInt(process.argv[2] ?? "76", 10);
 
 function post(path, body) {
   return new Promise((resolve, reject) => {
-    const url = new URL(path, "http://localhost:3000");
+    const url = new URL(path, "http://localhost:7777");
     const payload = JSON.stringify(body);
     const req = http.request(
       {
@@ -38,7 +38,7 @@ function post(path, body) {
   const req = http.get(
     {
       hostname: "localhost",
-      port: 3000,
+      port: 7777,
       path: "/api/agent/events",
       headers: { Accept: "text/event-stream" },
     },

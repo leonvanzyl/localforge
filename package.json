@@ -4,7 +4,7 @@
   "private": true,
   "description": "LocalForge - long-running autonomous coding harness that uses local LLMs (LM Studio) to build applications on autopilot.",
   "scripts": {
-    "dev": "next dev",
+    "dev": "next dev -p 7777",
     "build": "next build",
     "start": "next start",
     "lint": "next lint",

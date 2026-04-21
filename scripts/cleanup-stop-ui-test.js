@@ -12,7 +12,7 @@ function del(projectId) {
     const req = http.request(
       {
         hostname: "localhost",
-        port: 3000,
+        port: 7777,
         path: `/api/projects/${projectId}`,
         method: "DELETE",
         headers: { "Content-Type": "application/json" },

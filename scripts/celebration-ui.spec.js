@@ -4,7 +4,7 @@ const { test, expect, request } = require("@playwright/test");
 const Database = require("better-sqlite3");
 const http = require("node:http");
 
-const BASE = "http://localhost:3000";
+const BASE = "http://localhost:7777";
 
 function httpReq(method, path, body) {
   return new Promise((resolve, reject) => {

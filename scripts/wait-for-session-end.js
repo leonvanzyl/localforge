@@ -10,7 +10,7 @@ if (!Number.isFinite(projectId)) {
 
 function request(path) {
   return new Promise((resolve, reject) => {
-    const url = new URL(path, "http://localhost:3000");
+    const url = new URL(path, "http://localhost:7777");
     const req = http.request(
       { hostname: url.hostname, port: url.port, path: url.pathname + url.search, method: "GET" },
       (res) => {

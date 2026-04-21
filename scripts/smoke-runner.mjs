@@ -36,7 +36,7 @@ const child = spawn(
     cwd: root,
     env: {
       ...process.env,
-      BASE_URL: "http://localhost:3000",
+      BASE_URL: "http://localhost:7777",
     },
     stdio: ["ignore", "pipe", "inherit"],
   },

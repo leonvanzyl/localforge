@@ -8,7 +8,7 @@ export default defineConfig({
   workers: 1,
   reporter: [["list"], ["html", { open: "never" }]],
   use: {
-    baseURL: process.env.BASE_URL || "http://localhost:3000",
+    baseURL: process.env.BASE_URL || "http://localhost:7777",
     trace: "on-first-retry",
     screenshot: "only-on-failure",
   },
@@ -20,8 +20,8 @@ export default defineConfig({
   ],
   webServer: process.env.CI
     ? {
-        command: "npm run dev -- --port 3000",
-        url: "http://localhost:3000",
+        command: "npm run dev -- --port 7777",
+        url: "http://localhost:7777",
         reuseExistingServer: false,
         timeout: 120_000,
       }

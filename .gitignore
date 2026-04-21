@@ -32,6 +32,11 @@ yarn-debug.log*
 yarn-error.log*
 dev-server.log
 
+# Local scratch / one-off agent files
+.tmp-*
+claude-progress.txt
+scripts/.commit-msg-*.txt
+
 # Local env files
 .env
 .env.local

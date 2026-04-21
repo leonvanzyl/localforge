@@ -53,18 +53,21 @@ type ProjectSettingsResponse = {
     lm_studio_url: string | null;
     ollama_url: string | null;
     model: string | null;
+    coder_prompt: string | null;
   };
   effective: {
     provider: string;
     lm_studio_url: string;
     ollama_url: string;
     model: string;
+    coder_prompt: string;
   };
   defaults: {
     provider: string;
     lm_studio_url: string;
     ollama_url: string;
     model: string;
+    coder_prompt: string;
   };
 };
 
@@ -94,6 +97,7 @@ export function ProjectSettingsDialog({
   const [lmStudioUrl, setLmStudioUrl] = React.useState("");
   const [ollamaUrl, setOllamaUrl] = React.useState("");
   const [model, setModel] = React.useState("");
+  const [coderPrompt, setCoderPrompt] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -124,6 +128,7 @@ export function ProjectSettingsDialog({
         setLmStudioUrl(complete.overrides.lm_studio_url ?? "");
         setOllamaUrl(complete.overrides.ollama_url ?? "");
         setModel(complete.overrides.model ?? "");
+        setCoderPrompt(complete.overrides.coder_prompt ?? "");
       } catch (err) {
         if (cancelled) return;
         setError(
@@ -208,6 +213,7 @@ export function ProjectSettingsDialog({
           lm_studio_url: lmStudioUrl,
           ollama_url: ollamaUrl,
           model,
+          coder_prompt: coderPrompt,
         }),
       });
       const payload = (await res.json()) as Partial<ProjectSettingsResponse> & {
@@ -337,6 +343,30 @@ export function ProjectSettingsDialog({
                 disabled={submitting}
                 overridden={!!data.overrides.model}
               />
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="project-coder-prompt"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Additional coding instructions
+                </label>
+                <textarea
+                  id="project-coder-prompt"
+                  name="project-coder-prompt"
+                  data-testid="project-settings-coder-prompt"
+                  rows={6}
+                  value={coderPrompt}
+                  onChange={(e) => setCoderPrompt(e.target.value)}
+                  placeholder="e.g. This app runs on port 3005. Use Tailwind for styling. Always run npm run build after changes."
+                  disabled={submitting}
+                  className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
+                />
+                <p className="text-xs text-muted-foreground">
+                  Appended to the base coding prompt for every agent session.
+                  Use this to specify ports, frameworks, conventions, or any
+                  project-specific rules.
+                </p>
+              </div>
               <div
                 data-testid="project-settings-effective"
                 className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"

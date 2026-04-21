@@ -1,7 +1,7 @@
 // Delete a project (and remove its files from disk). Usage:
 //   node scripts/cleanup-project.js <projectId>
 const http = require("node:http");
-const BASE = "http://localhost:3000";
+const BASE = "http://localhost:7777";
 
 const projectId = Number.parseInt(process.argv[2] ?? "", 10);
 if (!Number.isFinite(projectId) || projectId <= 0) {

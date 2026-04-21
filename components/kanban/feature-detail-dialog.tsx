@@ -252,6 +252,47 @@ export function FeatureDetailDialog({
     };
   }, [open, featureId]);
 
+  /**
+   * Keep the agent-activity log section live while the dialog is open —
+   * otherwise you'd have to close and reopen the modal to see new log
+   * lines stream in during an active coding session. Poll every 2s and
+   * merge by id so the list grows without flicker. Stops when the dialog
+   * closes or the feature changes (the main effect above tears down the
+   * `logs` state then).
+   */
+  React.useEffect(() => {
+    if (!open || featureId == null) return;
+    let cancelled = false;
+    const tick = async () => {
+      try {
+        const res = await fetch(`/api/features/${featureId}/logs`, {
+          cache: "no-store",
+        });
+        if (!res.ok) return;
+        const data = (await res.json()) as { logs: AgentLogEntry[] };
+        if (cancelled) return;
+        setLogs((prev) => {
+          const incoming = data.logs ?? [];
+          if (incoming.length === prev.length) {
+            const lastPrev = prev[prev.length - 1];
+            const lastNew = incoming[incoming.length - 1];
+            if (lastPrev && lastNew && lastPrev.id === lastNew.id) {
+              return prev;
+            }
+          }
+          return incoming;
+        });
+      } catch {
+        // Swallow transient failures — the next tick will retry.
+      }
+    };
+    const intervalId = window.setInterval(tick, 2000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(intervalId);
+    };
+  }, [open, featureId]);
+
   const candidateDeps = React.useMemo(() => {
     if (!feature) return [] as DetailFeature[];
     return allFeatures.filter(

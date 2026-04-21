@@ -1,7 +1,7 @@
 // Seed a fresh project + feature for Feature #66 UI verification. Prints
 // {projectId, featureId} as JSON on stdout so the caller can capture IDs.
 const http = require("node:http");
-const BASE = "http://localhost:3000";
+const BASE = "http://localhost:7777";
 
 function request(method, path, body) {
   return new Promise((resolve, reject) => {

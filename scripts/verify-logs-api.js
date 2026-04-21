@@ -21,7 +21,7 @@ function getJson(url) {
 }
 
 (async () => {
-  const data = await getJson("http://localhost:3000/api/features/24/logs");
+  const data = await getJson("http://localhost:7777/api/features/24/logs");
   const types = new Set(data.logs.map((l) => l.messageType));
   console.log(`count=${data.logs.length} types=${[...types].sort().join(",")}`);
 })();
