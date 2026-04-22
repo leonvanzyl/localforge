@@ -54,6 +54,7 @@ type ProjectSettingsResponse = {
     ollama_url: string | null;
     model: string | null;
     coder_prompt: string | null;
+    dev_server_port: string | null;
   };
   effective: {
     provider: string;
@@ -61,6 +62,7 @@ type ProjectSettingsResponse = {
     ollama_url: string;
     model: string;
     coder_prompt: string;
+    dev_server_port: string;
   };
   defaults: {
     provider: string;
@@ -68,6 +70,7 @@ type ProjectSettingsResponse = {
     ollama_url: string;
     model: string;
     coder_prompt: string;
+    dev_server_port: string;
   };
 };
 
@@ -98,6 +101,7 @@ export function ProjectSettingsDialog({
   const [ollamaUrl, setOllamaUrl] = React.useState("");
   const [model, setModel] = React.useState("");
   const [coderPrompt, setCoderPrompt] = React.useState("");
+  const [devServerPort, setDevServerPort] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -129,6 +133,7 @@ export function ProjectSettingsDialog({
         setOllamaUrl(complete.overrides.ollama_url ?? "");
         setModel(complete.overrides.model ?? "");
         setCoderPrompt(complete.overrides.coder_prompt ?? "");
+        setDevServerPort(complete.overrides.dev_server_port ?? "");
       } catch (err) {
         if (cancelled) return;
         setError(
@@ -214,6 +219,7 @@ export function ProjectSettingsDialog({
           ollama_url: ollamaUrl,
           model,
           coder_prompt: coderPrompt,
+          dev_server_port: devServerPort,
         }),
       });
       const payload = (await res.json()) as Partial<ProjectSettingsResponse> & {
@@ -367,6 +373,19 @@ export function ProjectSettingsDialog({
                   project-specific rules.
                 </p>
               </div>
+              <Field
+                label="Dev server port"
+                id="project-dev-server-port"
+                value={devServerPort}
+                onChange={setDevServerPort}
+                placeholder={data.defaults.dev_server_port}
+                disabled={submitting}
+                description={
+                  data.overrides.dev_server_port
+                    ? "Project override is set. Clear to fall back to the global default."
+                    : `Using the global default (${data.defaults.dev_server_port}). Playwright screenshots will hit this port.`
+                }
+              />
               <div
                 data-testid="project-settings-effective"
                 className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"

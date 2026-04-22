@@ -5,6 +5,26 @@ import path from "node:path";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { EventEmitter } from "node:events";
 
+/* ──────────────────── Debug file logger ──────────────────── */
+const DEBUG_LOG_PATH = path.join(process.cwd(), "agent-runner-debug.log");
+
+function debugLog(label: string, data?: unknown): void {
+  try {
+    const ts = new Date().toISOString();
+    let line = `[${ts}] [orchestrator] [${label}]`;
+    if (data !== undefined) {
+      const serialized =
+        typeof data === "string"
+          ? data
+          : JSON.stringify(data, null, 2);
+      line += ` ${serialized}`;
+    }
+    fs.appendFileSync(DEBUG_LOG_PATH, line + "\n", "utf8");
+  } catch {
+    // Never let debug logging break the orchestrator
+  }
+}
+
 import {
   closeAgentSession,
   createAgentSession,
@@ -106,7 +126,14 @@ type RunningSession = {
    * reads it on startup; the orchestrator cleans it up in the close handler.
    */
   promptFile: string;
+  /** Watchdog timer — kills the runner if it hangs past the session deadline. */
+  watchdog?: ReturnType<typeof setTimeout>;
 };
+
+const SESSION_TIMEOUT_MS = Number.parseInt(
+  process.env.LOCALFORGE_SESSION_TIMEOUT_MS ?? String(30 * 60 * 1000),
+  10,
+);
 
 type OrchestratorState = {
   running: Map<number, RunningSession>; // keyed by session id
@@ -308,6 +335,40 @@ export function startOrchestrator(projectId: number): StartResult {
 
   attachChildHandlers(rs);
 
+  // Watchdog: kill the runner if it exceeds the session timeout. This
+  // prevents a hung runner (e.g. Playwright waiting on a dead server, or a
+  // dev server keeping the process alive) from blocking the entire pipeline.
+  if (SESSION_TIMEOUT_MS > 0) {
+    rs.watchdog = setTimeout(() => {
+      if (!getState().running.has(session.id)) return;
+      const log = appendAgentLog({
+        sessionId: session.id,
+        featureId: movedFeature.id,
+        message: `Session watchdog: runner exceeded ${Math.round(SESSION_TIMEOUT_MS / 1000 / 60)}min timeout — killing`,
+        messageType: "error",
+      });
+      broadcast({
+        type: "log",
+        sessionId: session.id,
+        featureId: movedFeature.id,
+        message: log.message,
+        messageType: "error",
+        screenshotPath: log.screenshotPath,
+        createdAt: log.createdAt,
+        logId: log.id,
+      });
+      try {
+        child.kill("SIGTERM");
+      } catch { /* best-effort */ }
+      setTimeout(() => {
+        try {
+          if (!child.killed) child.kill("SIGKILL");
+        } catch { /* noop */ }
+      }, 1000).unref();
+    }, SESSION_TIMEOUT_MS);
+    rs.watchdog.unref();
+  }
+
   return { session, feature: movedFeature, started: true };
 }
 
@@ -375,6 +436,7 @@ function spawnAgentRunner(args: {
   );
   const effectiveSettings = getProjectEffectiveSettings(args.session.projectId);
   const coderPrompt = effectiveSettings.coder_prompt || "";
+  const devServerPort = effectiveSettings.dev_server_port || "3000";
 
   // Write the feature context to a temp JSON file so the runner can read
   // long descriptions and acceptance criteria without argv escaping pain.
@@ -418,6 +480,21 @@ function spawnAgentRunner(args: {
     model,
   ];
 
+  debugLog("═══════════════════════ NEW SESSION ═══════════════════════");
+  debugLog("SPAWN_RUNNER", {
+    sessionId: args.session.id,
+    featureId: args.feature.id,
+    featureTitle: args.feature.title,
+    projectDir: args.projectDir,
+    baseUrl,
+    model,
+    provider,
+    runnerPath,
+    promptFile,
+    nodeExec: process.execPath,
+    sessionTimeoutMs: SESSION_TIMEOUT_MS,
+  });
+
   const child = spawn(process.execPath, argv, {
     cwd: args.projectDir,
     env: {
@@ -425,9 +502,12 @@ function spawnAgentRunner(args: {
       ANTHROPIC_BASE_URL: baseUrl,
       LOCALFORGE_SESSION_ID: String(args.session.id),
       LOCALFORGE_FEATURE_ID: String(args.feature.id),
+      LOCALFORGE_PLAYWRIGHT_BASE_URL: `http://localhost:${devServerPort}`,
     },
     stdio: "pipe",
   });
+
+  debugLog("SPAWN_RUNNER_PID", { pid: child.pid, sessionId: args.session.id });
   return { child, promptFile };
 }
 
@@ -456,6 +536,7 @@ function attachChildHandlers(rs: RunningSession): void {
   });
 
   child.on("error", (err) => {
+    debugLog("CHILD_ERROR", { sessionId: session.id, featureId: feature.id, error: err.message });
     const log = appendAgentLog({
       sessionId: session.id,
       featureId: feature.id,
@@ -476,8 +557,24 @@ function attachChildHandlers(rs: RunningSession): void {
   });
 
   child.on("close", (code, signal) => {
+    const stillRunning = getState().running.has(session.id);
+    debugLog("CHILD_CLOSE", {
+      sessionId: session.id,
+      featureId: feature.id,
+      exitCode: code,
+      signal,
+      stillInRunningMap: stillRunning,
+      stderrLength: rs.stderrBuffer.length,
+      remainingStdout: rs.stdoutBuffer.trim().length,
+    });
+
+    if (rs.stderrBuffer.trim().length > 0) {
+      debugLog("CHILD_STDERR", rs.stderrBuffer.trim().slice(0, 2000));
+    }
+
     // Flush any unterminated line still in the stdout buffer.
     if (rs.stdoutBuffer.trim().length > 0) {
+      debugLog("CHILD_CLOSE_FLUSHING_STDOUT", rs.stdoutBuffer.trim().slice(0, 500));
       handleRunnerLine(rs, rs.stdoutBuffer.trim());
       rs.stdoutBuffer = "";
     }
@@ -486,12 +583,14 @@ function attachChildHandlers(rs: RunningSession): void {
     // finalizeSession() already; if not, infer from exit code.
     if (getState().running.has(session.id)) {
       if (code === 0) {
+        debugLog("CHILD_CLOSE_INFERRED_SUCCESS", { sessionId: session.id });
         finalizeSession(rs, "success");
       } else {
         const reason =
           signal != null
             ? `terminated by ${signal}`
             : `runner exited with code ${code ?? "unknown"}`;
+        debugLog("CHILD_CLOSE_INFERRED_FAILURE", { sessionId: session.id, reason });
         const log = appendAgentLog({
           sessionId: session.id,
           featureId: feature.id,
@@ -513,6 +612,8 @@ function attachChildHandlers(rs: RunningSession): void {
           signal === "SIGTERM" || signal === "SIGKILL" ? "terminated" : "failed",
         );
       }
+    } else {
+      debugLog("CHILD_CLOSE_ALREADY_FINALIZED", { sessionId: session.id });
     }
   });
 }
@@ -580,6 +681,12 @@ function handleRunnerLine(rs: RunningSession, raw: string): void {
 
   if (parsed.type === "done") {
     const outcome = parsed.outcome;
+    debugLog("RUNNER_DONE_EVENT", {
+      sessionId: rs.session.id,
+      featureId: rs.feature.id,
+      outcome,
+      reason: (parsed as RunnerDoneLine).reason,
+    });
     finalizeSession(rs, outcome === "success" ? "success" : "failed");
   }
 }
@@ -602,9 +709,26 @@ function finalizeSession(
   rs: RunningSession,
   outcome: "success" | "failed" | "terminated",
 ): void {
+  debugLog("FINALIZE_SESSION_CALLED", {
+    sessionId: rs.session.id,
+    featureId: rs.feature.id,
+    featureTitle: rs.feature.title,
+    outcome,
+    inRunningMap: getState().running.has(rs.session.id),
+  });
+
   // Idempotent — only run once per session.
-  if (!getState().running.has(rs.session.id)) return;
+  if (!getState().running.has(rs.session.id)) {
+    debugLog("FINALIZE_SESSION_SKIPPED_ALREADY_FINALIZED", { sessionId: rs.session.id });
+    return;
+  }
   getState().running.delete(rs.session.id);
+
+  if (rs.watchdog) {
+    clearTimeout(rs.watchdog);
+    rs.watchdog = undefined;
+    debugLog("WATCHDOG_CLEARED", { sessionId: rs.session.id });
+  }
 
   // Best-effort cleanup of the temp prompt file the runner consumed.
   try {
@@ -701,6 +825,13 @@ function finalizeSession(
   // Feature #70 — auto-continue loop. If the project is NOT fully done but
   // has another ready feature in the backlog, spawn the next coding session
   // automatically so the user doesn't have to click Start between features.
+  debugLog("FINALIZE_SESSION_COMPLETE", {
+    sessionId: rs.session.id,
+    outcome,
+    finalSessionStatus,
+    finalFeatureStatus: finalFeature?.status,
+  });
+
   if (outcome === "success") {
     let projectIsDone = false;
     try {
@@ -709,6 +840,7 @@ function finalizeSession(
       );
       if (completedProject) {
         projectIsDone = true;
+        debugLog("PROJECT_COMPLETED", { projectId: completedProject.id });
         broadcast({
           type: "project_completed",
           sessionId: rs.session.id,
@@ -716,15 +848,19 @@ function finalizeSession(
         });
       }
     } catch (err) {
-      // Completion detection is best-effort — never let it break the session
-      // finalize path. Log and move on.
       // eslint-disable-next-line no-console
       console.error("[localforge] project completion check failed:", err);
     }
 
     if (!projectIsDone) {
+      debugLog("AUTO_CONTINUE_AFTER_SUCCESS", { sessionId: rs.session.id });
       maybeContinueWithNextFeature(rs);
     }
+  } else if (outcome === "failed") {
+    debugLog("AUTO_CONTINUE_AFTER_FAILURE", { sessionId: rs.session.id });
+    maybeContinueWithNextFeature(rs);
+  } else {
+    debugLog("NO_AUTO_CONTINUE_TERMINATED", { sessionId: rs.session.id });
   }
 }
 
@@ -741,15 +877,23 @@ function finalizeSession(
  */
 function maybeContinueWithNextFeature(rs: RunningSession): void {
   const projectId = rs.session.projectId;
+  debugLog("MAYBE_CONTINUE_SCHEDULED", { projectId, previousSessionId: rs.session.id });
 
   setImmediate(() => {
     try {
       const next = findNextReadyFeatureForProject(projectId);
+      debugLog("MAYBE_CONTINUE_NEXT_FEATURE", {
+        projectId,
+        nextFeature: next ? { id: next.id, title: next.title } : null,
+      });
       if (!next) return;
-      // startOrchestrator is idempotent; if something else already spun up a
-      // session for this project it returns the existing one.
       startOrchestrator(projectId);
+      debugLog("MAYBE_CONTINUE_STARTED", { projectId, nextFeatureId: next.id });
     } catch (err) {
+      debugLog("MAYBE_CONTINUE_ERROR", {
+        projectId,
+        error: err instanceof Error ? err.message : String(err),
+      });
       // eslint-disable-next-line no-console
       console.error(
         "[localforge] auto-continue to next feature failed:",

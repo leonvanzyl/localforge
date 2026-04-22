@@ -62,6 +62,43 @@ const HARNESS_ROOT = path.resolve(
   "..",
 );
 
+/* ──────────────────── Debug file logger ──────────────────── */
+const DEBUG_LOG_PATH = path.join(HARNESS_ROOT, "agent-runner-debug.log");
+
+function debugLog(label, data = undefined) {
+  try {
+    const ts = new Date().toISOString();
+    const pid = process.pid;
+    let line = `[${ts}] [pid=${pid}] [${label}]`;
+    if (data !== undefined) {
+      const serialized =
+        typeof data === "string"
+          ? data
+          : JSON.stringify(data, null, 2);
+      line += ` ${serialized}`;
+    }
+    fs.appendFileSync(DEBUG_LOG_PATH, line + "\n", "utf8");
+  } catch {
+    // Never let debug logging break the runner
+  }
+}
+
+debugLog("STARTUP", {
+  argv: process.argv.slice(2),
+  pid: process.pid,
+  nodeVersion: process.version,
+  cwd: process.cwd(),
+  env: {
+    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL ?? "(unset)",
+    LOCALFORGE_MAX_TURNS: process.env.LOCALFORGE_MAX_TURNS ?? "(unset)",
+    LOCALFORGE_MAX_RETRIES: process.env.LOCALFORGE_MAX_RETRIES ?? "(unset)",
+    LOCALFORGE_RETRY_DELAY_MS: process.env.LOCALFORGE_RETRY_DELAY_MS ?? "(unset)",
+    LOCALFORGE_PLAYWRIGHT_TIMEOUT_MS: process.env.LOCALFORGE_PLAYWRIGHT_TIMEOUT_MS ?? "(unset)",
+    LOCALFORGE_SESSION_ID: process.env.LOCALFORGE_SESSION_ID ?? "(unset)",
+    LOCALFORGE_FEATURE_ID: process.env.LOCALFORGE_FEATURE_ID ?? "(unset)",
+  },
+});
+
 function parseArgs(argv) {
   const out = {};
   for (let i = 0; i < argv.length; i++) {
@@ -428,7 +465,39 @@ function readFeaturePromptFile(promptFile) {
   }
 }
 
-async function runCodingAgent({ feature, projectDir, baseUrl, model, abort, coderPrompt }) {
+const MAX_RETRIES = Number.parseInt(
+  process.env.LOCALFORGE_MAX_RETRIES ?? "3",
+  10,
+);
+const RETRY_DELAY_MS = Number.parseInt(
+  process.env.LOCALFORGE_RETRY_DELAY_MS ?? "5000",
+  10,
+);
+
+function isTransientError(errorMessage) {
+  if (!errorMessage) return false;
+  const transientPatterns = [
+    "Failed to generate a valid tool call",
+    "overloaded",
+    "rate_limit",
+    "timeout",
+    "ECONNREFUSED",
+    "ECONNRESET",
+    "ETIMEDOUT",
+    "socket hang up",
+    "502",
+    "503",
+    "529",
+  ];
+  const lower = errorMessage.toLowerCase();
+  return transientPatterns.some((p) => lower.includes(p.toLowerCase()));
+}
+
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function runCodingAgentOnce({ feature, projectDir, baseUrl, model, abort, coderPrompt }) {
   const maxTurns = Number.parseInt(
     process.env.LOCALFORGE_MAX_TURNS ?? "1000",
     10,
@@ -437,27 +506,31 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort, code
   const workspaceHook = makeWorkspaceGuardHook(
     projectDir,
     (toolName, message) => {
+      debugLog("WORKSPACE_HOOK_BLOCKED", { toolName, message });
       emitLog(`Blocked ${toolName}: ${message}`, "error");
     },
   );
+
+  debugLog("SDK_SESSION_START", {
+    featureId: feature.id,
+    featureTitle: feature.title,
+    model,
+    baseUrl,
+    maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? maxTurns : 100,
+    promptLength: userPrompt.length,
+  });
 
   let toolCalls = 0;
   let lastAssistantText = "";
   let resultSubtype;
   let errorMessage = null;
+  let messageCount = 0;
 
   try {
     for await (const message of query({
       prompt: userPrompt,
       options: {
         systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt),
-        // We keep `bypassPermissions` so the SDK's own default allowlist
-        // doesn't refuse absolute-path Writes to the project folder (which
-        // it was doing in `default` mode and breaking every scaffold run).
-        // The workspace boundary is enforced by the PreToolUse hook below
-        // — hooks run regardless of permission mode and carry a `deny`
-        // decision back to the model, so a local model still can't escape
-        // the project directory.
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         hooks: {
@@ -473,6 +546,14 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort, code
         abortController: abort,
       },
     })) {
+      messageCount++;
+      debugLog("SDK_MESSAGE", {
+        messageCount,
+        type: message.type,
+        subtype: message.subtype ?? null,
+        hasContent: message.type === "assistant" ? Array.isArray(message?.message?.content) : undefined,
+      });
+
       if (message.type === "assistant") {
         const blocks = Array.isArray(message?.message?.content)
           ? message.message.content
@@ -481,6 +562,7 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort, code
           if (!block || typeof block !== "object") continue;
           if (block.type === "tool_use" && typeof block.name === "string") {
             toolCalls++;
+            debugLog("SDK_TOOL_USE", { toolCalls, name: block.name });
             emitLog(summariseToolUse(block.name, block.input), "action");
           } else if (block.type === "text" && typeof block.text === "string") {
             const text = block.text.trim();
@@ -492,10 +574,22 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort, code
         }
       } else if (message.type === "result") {
         resultSubtype = message.subtype;
+        debugLog("SDK_RESULT", { subtype: resultSubtype, messageCount, toolCalls });
+        debugLog("SDK_RESULT_BREAKING_LOOP", "result message received — exiting for-await loop");
+        break;
       }
     }
+    debugLog("SDK_LOOP_EXITED_NORMALLY", { messageCount, toolCalls, resultSubtype });
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
+    debugLog("SDK_LOOP_ERROR", {
+      errorMessage,
+      errorName: err instanceof Error ? err.name : typeof err,
+      errorStack: err instanceof Error ? err.stack : undefined,
+      messageCount,
+      toolCalls,
+      resultSubtype,
+    });
   }
 
   const ok =
@@ -503,7 +597,69 @@ async function runCodingAgent({ feature, projectDir, baseUrl, model, abort, code
     (resultSubtype === "success" ||
       resultSubtype === "end_turn" ||
       resultSubtype === undefined);
+
+  debugLog("SDK_SESSION_RESULT", {
+    ok,
+    errorMessage,
+    resultSubtype,
+    toolCalls,
+    messageCount,
+    lastAssistantTextSnippet: lastAssistantText.slice(0, 200),
+  });
+
   return { ok, toolCalls, lastAssistantText, resultSubtype, errorMessage };
+}
+
+async function runCodingAgent(params) {
+  const maxRetries = Number.isFinite(MAX_RETRIES) && MAX_RETRIES > 0 ? MAX_RETRIES : 3;
+  debugLog("RETRY_WRAPPER_START", { maxRetries, retryDelayMs: RETRY_DELAY_MS });
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    debugLog("RETRY_ATTEMPT", { attempt, maxRetries });
+    const result = await runCodingAgentOnce(params);
+
+    if (result.ok) {
+      debugLog("RETRY_WRAPPER_SUCCESS", { attempt });
+      return result;
+    }
+
+    const transient = isTransientError(result.errorMessage);
+    debugLog("RETRY_WRAPPER_FAILED_ATTEMPT", {
+      attempt,
+      errorMessage: result.errorMessage,
+      resultSubtype: result.resultSubtype,
+      isTransient: transient,
+      willRetry: attempt < maxRetries && transient,
+    });
+
+    if (attempt < maxRetries && transient) {
+      const delay = RETRY_DELAY_MS * attempt;
+      emitLog(
+        `Transient error on attempt ${attempt}/${maxRetries}: ${result.errorMessage} — retrying in ${Math.round(delay / 1000)}s`,
+        "error",
+      );
+      await sleep(delay);
+      continue;
+    }
+
+    debugLog("RETRY_WRAPPER_GIVING_UP", { attempt, errorMessage: result.errorMessage });
+    return result;
+  }
+}
+
+const PLAYWRIGHT_TIMEOUT_MS = Number.parseInt(
+  process.env.LOCALFORGE_PLAYWRIGHT_TIMEOUT_MS ?? "60000",
+  10,
+);
+
+function withTimeout(promise, ms, label) {
+  if (ms <= 0) return promise;
+  return Promise.race([
+    promise,
+    new Promise((_, reject) =>
+      setTimeout(() => reject(new Error(`${label} timed out after ${ms}ms`)), ms).unref(),
+    ),
+  ]);
 }
 
 async function main() {
@@ -518,6 +674,8 @@ async function main() {
   const provider = args["provider"] ?? "lm_studio";
   const model = args["model"] ?? "";
 
+  debugLog("MAIN_START", { sessionId, featureId, featureTitleArg, projectDir, baseUrl, provider, model, promptFile });
+
   const fileFeature = readFeaturePromptFile(promptFile);
   const feature = {
     id: featureId,
@@ -527,11 +685,20 @@ async function main() {
   };
   const coderPrompt = fileFeature?.coderPrompt ?? "";
 
+  debugLog("FEATURE_LOADED", {
+    fromFile: !!fileFeature,
+    title: feature.title,
+    hasDescription: !!feature.description,
+    hasAcceptanceCriteria: !!feature.acceptanceCriteria,
+    coderPromptLength: coderPrompt.length,
+  });
+
   emitLog(
     `Starting Claude Agent SDK session for feature #${featureId}: "${feature.title}"`,
     "info",
   );
   if (!baseUrl) {
+    debugLog("ABORT_NO_BASE_URL");
     emitLog(
       "No ANTHROPIC_BASE_URL configured — the SDK cannot reach a local model. Aborting.",
       "error",
@@ -547,10 +714,9 @@ async function main() {
   emitLog(`Working directory: ${projectDir}`, "info");
 
   const abort = new AbortController();
-  // Map SIGTERM/SIGINT to the SDK's AbortController so the agent quits its
-  // current turn cleanly instead of leaving HTTP requests dangling.
   for (const sig of ["SIGTERM", "SIGINT"]) {
     process.on(sig, () => {
+      debugLog("SIGNAL_RECEIVED", { signal: sig });
       try {
         emitLog(`Received ${sig} — aborting`, "error");
         abort.abort();
@@ -558,117 +724,201 @@ async function main() {
       } catch {
         /* stdout may already be closed */
       }
-      // Give the SDK a brief moment to unwind, then force-exit.
       setTimeout(() => process.exit(130), 250).unref();
     });
   }
 
+  let doneEmitted = false;
+
   const codingStart = Date.now();
-  const result = await runCodingAgent({
-    feature,
-    projectDir,
-    baseUrl,
-    model,
-    abort,
-    coderPrompt,
-  });
-  const codingMs = Date.now() - codingStart;
-
-  if (!result.ok) {
-    emitLog(
-      `Agent session ended without success (${codingMs}ms, ${
-        result.toolCalls
-      } tool calls, subtype=${result.resultSubtype ?? "none"})${
-        result.errorMessage ? `: ${result.errorMessage}` : ""
-      }`,
-      "error",
-    );
-    emit({
-      type: "done",
-      outcome: "failure",
-      reason: result.errorMessage ?? `result ${result.resultSubtype ?? "unknown"}`,
+  try {
+    debugLog("PHASE_SDK_START");
+    const result = await runCodingAgent({
+      feature,
+      projectDir,
+      baseUrl,
+      model,
+      abort,
+      coderPrompt,
     });
-    process.stdout.write("", () => process.exit(1));
-    return;
-  }
+    const codingMs = Date.now() - codingStart;
 
-  emitLog(
-    `Agent session completed in ${codingMs}ms after ${result.toolCalls} tool calls`,
-    "info",
-  );
-  if (result.lastAssistantText) {
+    debugLog("PHASE_SDK_COMPLETE", {
+      codingMs,
+      resultExists: !!result,
+      ok: result?.ok,
+      toolCalls: result?.toolCalls,
+      resultSubtype: result?.resultSubtype,
+      errorMessage: result?.errorMessage,
+    });
+
+    if (!result || !result.ok) {
+      debugLog("OUTCOME_FAILURE_FROM_SDK", {
+        reason: result?.errorMessage ?? result?.resultSubtype,
+      });
+      emitLog(
+        `Agent session ended without success (${codingMs}ms, ${
+          result?.toolCalls ?? 0
+        } tool calls, subtype=${result?.resultSubtype ?? "none"})${
+          result?.errorMessage ? `: ${result.errorMessage}` : ""
+        }`,
+        "error",
+      );
+      emit({
+        type: "done",
+        outcome: "failure",
+        reason: result?.errorMessage ?? `result ${result?.resultSubtype ?? "unknown"}`,
+      });
+      doneEmitted = true;
+      debugLog("DONE_EMITTED", { outcome: "failure", phase: "sdk" });
+      process.stdout.write("", () => process.exit(1));
+      return;
+    }
+
     emitLog(
-      `Agent summary: ${truncate(result.lastAssistantText, 400)}`,
+      `Agent session completed in ${codingMs}ms after ${result.toolCalls} tool calls`,
       "info",
     );
-  }
-
-  // Write + run a Playwright spec to verify the change boots in the browser.
-  // This produces the `test_result` / `screenshot` log lines the kanban card
-  // badge parses (tests/feat96-card-badge.spec.ts).
-  let specInfo = null;
-  try {
-    specInfo = writePlaywrightSpec(projectDir, featureId, feature.title);
-    emitLog(`Wrote Playwright spec: ${specInfo.specPath}`, "action");
-  } catch (err) {
-    emitLog(
-      `Failed to write Playwright spec: ${
-        err instanceof Error ? err.message : String(err)
-      }`,
-      "error",
-    );
-  }
-
-  let playwrightFailed = false;
-  if (specInfo) {
-    emitLog(`Running Playwright spec for feature #${featureId}`, "action");
-    const tr = await runPlaywrightTests({
-      featureId,
-      featureTitle: feature.title,
-      screenshotPath: specInfo.screenshotPath,
-    });
-    const summary = `npx playwright test completed: ${tr.passed} passed, ${tr.failed} failed (${tr.durationMs}ms)`;
-    emitLog(summary, "test_result");
-    if (!tr.ok && tr.error) {
-      emitLog(`Playwright error detail: ${tr.error}`, "error");
-    }
-    if (!tr.ok) playwrightFailed = true;
-
-    let screenshotOnDisk = false;
-    try {
-      screenshotOnDisk =
-        fs.existsSync(specInfo.screenshotPath) &&
-        fs.statSync(specInfo.screenshotPath).size > 0;
-    } catch {
-      screenshotOnDisk = false;
-    }
-    if (screenshotOnDisk) {
+    if (result.lastAssistantText) {
       emitLog(
-        `Captured verification screenshot: ${specInfo.screenshotRel}`,
-        "screenshot",
-        { screenshotPath: specInfo.screenshotRel },
+        `Agent summary: ${truncate(result.lastAssistantText, 400)}`,
+        "info",
       );
-    } else {
+    }
+
+    // ── Playwright verification phase ──
+    debugLog("PHASE_PLAYWRIGHT_START", { playwrightTimeoutMs: PLAYWRIGHT_TIMEOUT_MS });
+
+    let specInfo = null;
+    try {
+      specInfo = writePlaywrightSpec(projectDir, featureId, feature.title);
+      debugLog("PLAYWRIGHT_SPEC_WRITTEN", {
+        specPath: specInfo.specPath,
+        screenshotPath: specInfo.screenshotPath,
+      });
+      emitLog(`Wrote Playwright spec: ${specInfo.specPath}`, "action");
+    } catch (err) {
+      debugLog("PLAYWRIGHT_SPEC_WRITE_FAILED", {
+        error: err instanceof Error ? err.message : String(err),
+        stack: err instanceof Error ? err.stack : undefined,
+      });
       emitLog(
-        `Screenshot not captured (playwright run did not produce ${specInfo.screenshotRel})`,
+        `Failed to write Playwright spec: ${
+          err instanceof Error ? err.message : String(err)
+        }`,
         "error",
       );
     }
-  }
 
-  if (playwrightFailed) {
-    emitLog("Verification failed — Playwright reported test failures", "error");
-    emit({ type: "done", outcome: "failure", reason: "playwright tests failed" });
+    let playwrightFailed = false;
+    if (specInfo) {
+      emitLog(`Running Playwright spec for feature #${featureId}`, "action");
+      debugLog("PLAYWRIGHT_RUN_START");
+      try {
+        const tr = await withTimeout(
+          runPlaywrightTests({
+            featureId,
+            featureTitle: feature.title,
+            screenshotPath: specInfo.screenshotPath,
+          }),
+          PLAYWRIGHT_TIMEOUT_MS,
+          "Playwright verification",
+        );
+        debugLog("PLAYWRIGHT_RUN_COMPLETE", {
+          ok: tr.ok,
+          passed: tr.passed,
+          failed: tr.failed,
+          durationMs: tr.durationMs,
+          error: tr.error,
+        });
+        const summary = `npx playwright test completed: ${tr.passed} passed, ${tr.failed} failed (${tr.durationMs}ms)`;
+        emitLog(summary, "test_result");
+        if (!tr.ok && tr.error) {
+          emitLog(`Playwright error detail: ${tr.error}`, "error");
+        }
+        if (!tr.ok) playwrightFailed = true;
+      } catch (err) {
+        debugLog("PLAYWRIGHT_RUN_ERROR", {
+          error: err instanceof Error ? err.message : String(err),
+          stack: err instanceof Error ? err.stack : undefined,
+        });
+        emitLog(
+          `Playwright verification error: ${err instanceof Error ? err.message : String(err)}`,
+          "error",
+        );
+        playwrightFailed = true;
+      }
+
+      let screenshotOnDisk = false;
+      try {
+        screenshotOnDisk =
+          fs.existsSync(specInfo.screenshotPath) &&
+          fs.statSync(specInfo.screenshotPath).size > 0;
+      } catch {
+        screenshotOnDisk = false;
+      }
+      debugLog("PLAYWRIGHT_SCREENSHOT_CHECK", {
+        screenshotPath: specInfo.screenshotPath,
+        screenshotOnDisk,
+      });
+      if (screenshotOnDisk) {
+        emitLog(
+          `Captured verification screenshot: ${specInfo.screenshotRel}`,
+          "screenshot",
+          { screenshotPath: specInfo.screenshotRel },
+        );
+      } else {
+        emitLog(
+          `Screenshot not captured (playwright run did not produce ${specInfo.screenshotRel})`,
+          "error",
+        );
+      }
+    } else {
+      debugLog("PLAYWRIGHT_SKIPPED", "no specInfo");
+    }
+
+    debugLog("PHASE_PLAYWRIGHT_COMPLETE", { playwrightFailed });
+
+    if (playwrightFailed) {
+      debugLog("OUTCOME_FAILURE_FROM_PLAYWRIGHT");
+      emitLog("Verification failed — Playwright reported test failures", "error");
+      emit({ type: "done", outcome: "failure", reason: "playwright tests failed" });
+      doneEmitted = true;
+      debugLog("DONE_EMITTED", { outcome: "failure", phase: "playwright" });
+      process.stdout.write("", () => process.exit(0));
+      return;
+    }
+
+    debugLog("OUTCOME_SUCCESS");
+    emitLog("All verification steps passed", "info");
+    emit({ type: "done", outcome: "success" });
+    doneEmitted = true;
+    debugLog("DONE_EMITTED", { outcome: "success", phase: "all" });
     process.stdout.write("", () => process.exit(0));
-    return;
+  } catch (err) {
+    debugLog("MAIN_TRY_CATCH", {
+      error: err instanceof Error ? err.message : String(err),
+      stack: err instanceof Error ? err.stack : undefined,
+      doneEmitted,
+    });
+    throw err;
+  } finally {
+    debugLog("MAIN_FINALLY", { doneEmitted });
+    if (!doneEmitted) {
+      debugLog("SAFETY_NET_FIRING", "done event was never emitted — sending failure");
+      emitLog("Runner exiting without a done event — emitting failure as safety net", "error");
+      emit({ type: "done", outcome: "failure", reason: "runner did not complete normally" });
+      process.stdout.write("", () => process.exit(1));
+    }
+    debugLog("MAIN_EXIT", { doneEmitted, uptimeMs: Date.now() - codingStart });
   }
-
-  emitLog("All verification steps passed", "info");
-  emit({ type: "done", outcome: "success" });
-  process.stdout.write("", () => process.exit(0));
 }
 
 void main().catch((err) => {
+  debugLog("UNHANDLED_MAIN_CATCH", {
+    error: err instanceof Error ? err.message : String(err),
+    stack: err instanceof Error ? err.stack : undefined,
+  });
   emitLog(
     `Unhandled error in agent runner: ${err instanceof Error ? err.message : String(err)}`,
     "error",

@@ -28,6 +28,7 @@ export const GLOBAL_SETTING_KEYS = [
   "model",
   "working_directory",
   "coder_prompt",
+  "dev_server_port",
 ] as const;
 
 /**
@@ -41,6 +42,7 @@ export const PROJECT_SETTING_KEYS = [
   "ollama_url",
   "model",
   "coder_prompt",
+  "dev_server_port",
 ] as const;
 
 export type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
@@ -53,6 +55,7 @@ export const DEFAULT_GLOBAL_SETTINGS: Record<GlobalSettingKey, string> = {
   model: "google/gemma-4-31b",
   working_directory: path.join(process.cwd(), "projects"),
   coder_prompt: "",
+  dev_server_port: "3000",
 };
 
 function readGlobal(key: GlobalSettingKey): string | null {
