@@ -538,6 +538,7 @@ function spawnAgentRunner(args: {
       ANTHROPIC_BASE_URL: baseUrl,
       LOCALFORGE_SESSION_ID: String(args.session.id),
       LOCALFORGE_FEATURE_ID: String(args.feature.id),
+      LOCALFORGE_DEV_SERVER_PORT: devServerPort,
       LOCALFORGE_PLAYWRIGHT_BASE_URL: `http://localhost:${devServerPort}`,
     },
     stdio: "pipe",

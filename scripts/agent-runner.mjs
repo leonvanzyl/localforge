@@ -297,7 +297,7 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
   }
 }
 
-function buildCodingSystemPrompt(projectDir, additionalInstructions) {
+function buildCodingSystemPrompt(projectDir, additionalInstructions, devServerPort) {
   const base = `You are LocalForge's coding agent.
 
 You have been handed ONE backlog feature for a local project. Implement it
@@ -326,7 +326,16 @@ Rules:
 - Prefer small, focused edits to existing files over creating new scaffolding.
 - Do NOT ask the user questions. Make reasonable assumptions and note them
   in your final reply.
-- Do NOT invent files you have not read. Always Read before you Edit.`;
+- Do NOT invent files you have not read. Always Read before you Edit.
+
+Dev server configuration:
+If this project has a web dev server, it MUST listen on port ${devServerPort}.
+End-to-end verification (Playwright) navigates to http://localhost:${devServerPort}
+after your session completes — a mismatch means the screenshot captures the
+wrong app. Start scripts, config files (package.json scripts, next.config.*,
+vite.config.*), and any hard-coded baseURL in tests should all use port
+${devServerPort}. This is authoritative; do not pick a different port even
+if "Additional project-specific instructions" below seems to suggest one.`;
 
   if (additionalInstructions && additionalInstructions.trim()) {
     return base + `\n\nAdditional project-specific instructions:\n${additionalInstructions.trim()}`;
@@ -497,7 +506,7 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runCodingAgentOnce({ feature, projectDir, baseUrl, model, abort, coderPrompt }) {
+async function runCodingAgentOnce({ feature, projectDir, baseUrl, model, abort, coderPrompt, devServerPort }) {
   const maxTurns = Number.parseInt(
     process.env.LOCALFORGE_MAX_TURNS ?? "1000",
     10,
@@ -530,7 +539,7 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, model, abort, 
     for await (const message of query({
       prompt: userPrompt,
       options: {
-        systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt),
+        systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort),
         permissionMode: "bypassPermissions",
         allowDangerouslySkipPermissions: true,
         hooks: {
@@ -684,6 +693,7 @@ async function main() {
     acceptanceCriteria: fileFeature?.acceptanceCriteria ?? null,
   };
   const coderPrompt = fileFeature?.coderPrompt ?? "";
+  const devServerPort = process.env.LOCALFORGE_DEV_SERVER_PORT || "3000";
 
   debugLog("FEATURE_LOADED", {
     fromFile: !!fileFeature,
@@ -691,6 +701,7 @@ async function main() {
     hasDescription: !!feature.description,
     hasAcceptanceCriteria: !!feature.acceptanceCriteria,
     coderPromptLength: coderPrompt.length,
+    devServerPort,
   });
 
   emitLog(
@@ -740,6 +751,7 @@ async function main() {
       model,
       abort,
       coderPrompt,
+      devServerPort,
     });
     const codingMs = Date.now() - codingStart;
 

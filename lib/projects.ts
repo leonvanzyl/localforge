@@ -1,7 +1,7 @@
 import "server-only";
 import path from "node:path";
 import fs from "node:fs";
-import { and, eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { db } from "./db";
 import {
   projects,
@@ -380,12 +380,61 @@ export function getProjectCompletionStats(
   const startedAt = project.createdAt;
   const completedAt =
     project.status === "completed" ? project.updatedAt : null;
+
+  // "Total time" on the celebration screen is the *active* time the coding
+  // agents spent working — not the wall-clock gap between project creation
+  // and final completion, which would include overnight breaks and days the
+  // project sat paused. We sum the lengths of every coding session, after
+  // merging overlapping sessions so concurrent agents don't double-count.
+  //
+  // We only count sessions with status "completed" or "failed": for those,
+  // `ended_at` is the real end of the agent's work. "terminated" sessions
+  // are closed by the user or by the orphan reaper whenever the server
+  // happens to notice they're dead, so their `ended_at` can be hours or
+  // days after the agent actually stopped — counting them inflates the
+  // total by the idle time between death and cleanup.
   let durationMs: number | null = null;
   if (completedAt) {
-    const start = parseTimestamp(startedAt);
-    const end = parseTimestamp(completedAt);
-    if (start != null && end != null && end >= start) {
-      durationMs = end - start;
+    const sessionRows = db
+      .select({
+        startedAt: agentSessions.startedAt,
+        endedAt: agentSessions.endedAt,
+      })
+      .from(agentSessions)
+      .where(
+        and(
+          eq(agentSessions.projectId, projectId),
+          eq(agentSessions.sessionType, "coding"),
+          inArray(agentSessions.status, ["completed", "failed"]),
+        ),
+      )
+      .all();
+
+    const intervals: Array<[number, number]> = [];
+    for (const row of sessionRows) {
+      if (!row.endedAt) continue;
+      const s = parseTimestamp(row.startedAt);
+      const e = parseTimestamp(row.endedAt);
+      if (s == null || e == null || e <= s) continue;
+      intervals.push([s, e]);
+    }
+
+    if (intervals.length > 0) {
+      intervals.sort((a, b) => a[0] - b[0]);
+      let [curStart, curEnd] = intervals[0];
+      let total = 0;
+      for (let i = 1; i < intervals.length; i++) {
+        const [s, e] = intervals[i];
+        if (s <= curEnd) {
+          if (e > curEnd) curEnd = e;
+        } else {
+          total += curEnd - curStart;
+          curStart = s;
+          curEnd = e;
+        }
+      }
+      total += curEnd - curStart;
+      durationMs = total;
     }
   }
 

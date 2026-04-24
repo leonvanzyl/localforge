@@ -8,11 +8,37 @@ import {
   PlusIcon,
   ActivityIcon,
   SettingsIcon,
+  PanelLeftIcon,
 } from "@/components/forge/icons";
+
+const COLLAPSED_STORAGE_KEY = "localforge.sidebar.collapsed";
 
 export function ForgeSidebar() {
   const { projects, openNewProjectDialog } = useShell();
   const pathname = usePathname();
+
+  const [collapsed, setCollapsed] = React.useState(false);
+
+  React.useEffect(() => {
+    try {
+      const saved = window.localStorage.getItem(COLLAPSED_STORAGE_KEY);
+      if (saved === "1") setCollapsed(true);
+    } catch {
+      /* ignore storage failures */
+    }
+  }, []);
+
+  const toggleCollapsed = React.useCallback(() => {
+    setCollapsed((prev) => {
+      const next = !prev;
+      try {
+        window.localStorage.setItem(COLLAPSED_STORAGE_KEY, next ? "1" : "0");
+      } catch {
+        /* ignore storage failures */
+      }
+      return next;
+    });
+  }, []);
 
   // Determine the active project ID from the URL
   const activeProjectId = React.useMemo(() => {
@@ -23,11 +49,25 @@ export function ForgeSidebar() {
   const projectList = projects ?? [];
 
   return (
-    <aside className="lf-sidebar">
+    <aside
+      className="lf-sidebar"
+      data-collapsed={collapsed ? "true" : "false"}
+    >
       {/* Header */}
       <div className="side-head">
         <span className="title">Workspaces</span>
         <span className="count">{projectList.length}</span>
+        <button
+          type="button"
+          className="btn icon-btn ghost side-toggle"
+          onClick={toggleCollapsed}
+          aria-label={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          aria-expanded={!collapsed}
+          title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
+          data-testid="sidebar-collapse-toggle"
+        >
+          <PanelLeftIcon size={16} />
+        </button>
       </div>
 
       {/* Project list */}
@@ -44,6 +84,7 @@ export function ForgeSidebar() {
               key={p.id}
               href={`/projects/${p.id}`}
               style={{ textDecoration: "none", color: "inherit" }}
+              title={p.name}
             >
               <div className={"ws-item " + (isActive ? "active" : "")}>
                 <div className="ws-row">
@@ -72,19 +113,23 @@ export function ForgeSidebar() {
       </div>
 
       {/* New workspace button */}
-      <div className="new-ws" onClick={openNewProjectDialog}>
+      <div
+        className="new-ws"
+        onClick={openNewProjectDialog}
+        title="new workspace"
+      >
         <PlusIcon size={16} />
-        new workspace
+        <span className="label">new workspace</span>
       </div>
 
       {/* Footer */}
       <div className="side-foot">
-        <button className="btn icon-btn ghost">
+        <button className="btn icon-btn ghost" title="Activity">
           <ActivityIcon size={16} />
         </button>
-        <div style={{ flex: 1 }} />
+        <div className="spacer" />
         <Link href="/settings" style={{ textDecoration: "none", color: "inherit" }}>
-          <button className="btn icon-btn ghost">
+          <button className="btn icon-btn ghost" title="Settings">
             <SettingsIcon size={16} />
           </button>
         </Link>

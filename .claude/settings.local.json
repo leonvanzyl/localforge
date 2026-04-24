@@ -3,7 +3,9 @@
     "allow": [
       "mcp__Claude_Preview__preview_start",
       "Bash(xargs -I{} echo \"=== {} ===\")",
-      "Bash(git status *)"
+      "Bash(git status *)",
+      "Bash(sqlite3 data/localforge.db \"SELECT id, status, session_type, started_at, ended_at, CASE WHEN ended_at IS NULL THEN NULL ELSE ROUND\\(\\(julianday\\(ended_at\\) - julianday\\(started_at\\)\\) * 86400, 0\\) END AS duration_seconds FROM agent_sessions WHERE project_id = 2 AND session_type = 'coding' ORDER BY started_at;\")",
+      "Bash(node -e \"const Database = require\\('better-sqlite3'\\); const db = new Database\\('./data/localforge.db', {readonly:true}\\); const rows = db.prepare\\(\\\\\"SELECT id, status, session_type, started_at, ended_at FROM agent_sessions WHERE project_id=2 AND session_type='coding' ORDER BY started_at\\\\\"\\).all\\(\\); const parse = s => s ? \\(s.includes\\('T'\\) ? Date.parse\\(s\\) : Date.parse\\(s.replace\\(' ','T'\\)+'Z'\\)\\) : null; let total=0; const intervals=[]; for \\(const r of rows\\) { const s=parse\\(r.started_at\\), e=parse\\(r.ended_at\\); if \\(s&&e&&e>s\\) intervals.push\\([s,e,r]\\); } intervals.sort\\(\\(a,b\\)=>a[0]-b[0]\\); let merged=[]; for \\(const iv of intervals\\) { if \\(!merged.length||iv[0]>merged[merged.length-1][1]\\) merged.push\\([iv[0], iv[1]]\\); else merged[merged.length-1][1] = Math.max\\(merged[merged.length-1][1], iv[1]\\); } const sum = merged.reduce\\(\\(a,i\\) => a + \\(i[1]-i[0]\\), 0\\); console.log\\('session count:', rows.length\\); console.log\\('with ended_at:', intervals.length\\); console.log\\('merged intervals:', merged.length\\); console.log\\('top durations \\(mins\\):'\\); intervals.map\\(\\([s,e,r]\\) => \\({id:r.id, status:r.status, mins:\\(\\(e-s\\)/60000\\).toFixed\\(1\\)}\\)\\).sort\\(\\(a,b\\)=>Number\\(b.mins\\)-Number\\(a.mins\\)\\).slice\\(0,12\\).forEach\\(r=>console.log\\(r\\)\\); console.log\\('sum merged \\(h\\):', \\(sum/3600000\\).toFixed\\(2\\)\\);\")"
     ]
   }
 }

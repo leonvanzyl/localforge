@@ -369,14 +369,15 @@ export function ProjectSettingsDialog({
                   rows={6}
                   value={coderPrompt}
                   onChange={(e) => setCoderPrompt(e.target.value)}
-                  placeholder="e.g. This app runs on port 3005. Use Tailwind for styling. Always run npm run build after changes."
+                  placeholder="e.g. Use Tailwind for styling. Always run npm run build after changes. Prefer server components over client components."
                   disabled={submitting}
                   className="flex w-full rounded-md border border-input bg-background px-3 py-2 text-sm text-foreground ring-offset-background placeholder:text-muted-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring focus-visible:ring-offset-2 disabled:cursor-not-allowed disabled:opacity-50"
                 />
                 <p className="text-xs text-muted-foreground">
                   Appended to the base coding prompt for every agent session.
-                  Use this to specify ports, frameworks, conventions, or any
-                  project-specific rules.
+                  Use this for frameworks, conventions, or any project-specific
+                  rules. For the dev server port, use the dedicated Dev server
+                  port field below — the agent reads that field directly.
                 </p>
               </div>
               <Field
@@ -388,8 +389,8 @@ export function ProjectSettingsDialog({
                 disabled={submitting}
                 description={
                   data.overrides.dev_server_port
-                    ? "Project override is set. Clear to fall back to the global default."
-                    : `Using the global default (${data.defaults.dev_server_port}). Playwright screenshots will hit this port.`
+                    ? "Project override is set. The coding agent starts the dev server on this port, and Playwright screenshots hit the same port."
+                    : `Using the global default (${data.defaults.dev_server_port}). The coding agent starts the dev server on this port, and Playwright screenshots hit the same port.`
                 }
               />
               <div className="flex flex-col gap-1">

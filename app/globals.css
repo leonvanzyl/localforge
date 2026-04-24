@@ -213,7 +213,9 @@
   width: 248px; flex-shrink: 0; background: var(--bg-2);
   border-right: 1px solid var(--line);
   display: flex; flex-direction: column; overflow: hidden;
+  transition: width 180ms ease;
 }
+.lf-sidebar[data-collapsed="true"] { width: 56px; }
 .lf-content {
   display: flex; flex-direction: column; flex: 1; min-width: 0;
   background: var(--bg); position: relative; overflow-y: auto; overflow-x: hidden;
@@ -256,6 +258,42 @@
 .new-ws:hover { border-color: var(--accent); color: var(--accent); background: rgba(200,90,43,0.04); }
 
 .side-foot { padding: 10px 12px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
+.side-foot .spacer { flex: 1; }
+.side-head .side-toggle { margin-left: 4px; }
+
+/* Collapsed sidebar rules */
+.lf-sidebar[data-collapsed="true"] .side-head {
+  justify-content: center; padding: 14px 8px 8px;
+}
+.lf-sidebar[data-collapsed="true"] .side-head .title,
+.lf-sidebar[data-collapsed="true"] .side-head .count { display: none; }
+.lf-sidebar[data-collapsed="true"] .side-head .side-toggle { margin-left: 0; }
+
+.lf-sidebar[data-collapsed="true"] .ws-list {
+  padding: 4px 6px 8px; align-items: center;
+}
+.lf-sidebar[data-collapsed="true"] .ws-list > a { width: 40px; }
+.lf-sidebar[data-collapsed="true"] .ws-item {
+  padding: 10px 0; width: 40px;
+  align-items: center; justify-content: center; gap: 0;
+}
+.lf-sidebar[data-collapsed="true"] .ws-row { justify-content: center; gap: 0; }
+.lf-sidebar[data-collapsed="true"] .ws-indicator { width: 10px; height: 10px; }
+.lf-sidebar[data-collapsed="true"] .ws-name,
+.lf-sidebar[data-collapsed="true"] .ws-path,
+.lf-sidebar[data-collapsed="true"] .ws-meta,
+.lf-sidebar[data-collapsed="true"] .ws-progress { display: none; }
+
+.lf-sidebar[data-collapsed="true"] .new-ws {
+  margin: 10px 8px 10px; padding: 10px 0;
+  justify-content: center; gap: 0;
+}
+.lf-sidebar[data-collapsed="true"] .new-ws .label { display: none; }
+
+.lf-sidebar[data-collapsed="true"] .side-foot {
+  flex-direction: column; gap: 6px; padding: 10px 8px;
+}
+.lf-sidebar[data-collapsed="true"] .side-foot .spacer { display: none; }
 
 /* ─── Content head ─── */
 .content-head {

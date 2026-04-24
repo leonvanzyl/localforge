@@ -299,3 +299,19 @@ export const ChevronDownIcon: React.FC<IconProps> = ({ size = 16, className, sty
     <polyline points="6,9 12,15 18,9" />
   </svg>
 );
+
+export const PanelLeftIcon: React.FC<IconProps> = ({ size = 16, className, style, ...props }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    className={className}
+    style={style}
+    {...defaultStroke}
+    {...props}
+  >
+    <rect x="3" y="4" width="18" height="16" rx="2" />
+    <line x1="9" y1="4" x2="9" y2="20" />
+  </svg>
+);
