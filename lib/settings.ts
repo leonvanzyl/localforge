@@ -58,7 +58,7 @@ export const DEFAULT_GLOBAL_SETTINGS: Record<GlobalSettingKey, string> = {
   working_directory: path.join(process.cwd(), "projects"),
   coder_prompt: "",
   dev_server_port: "3000",
-  max_concurrent_agents: "3",
+  max_concurrent_agents: "1",
 };
 
 export const MAX_CONCURRENT_AGENTS_HARD_CAP = 3;

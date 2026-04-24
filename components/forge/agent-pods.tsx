@@ -2,7 +2,7 @@
 
 import React, { useState, useCallback } from "react";
 import { Robot } from "@/components/forge/robot";
-import { StopIcon, PlayIcon, ChatIcon } from "@/components/forge/icons";
+import { StopIcon, PlayIcon } from "@/components/forge/icons";
 
 /* ──────────────────── Types ──────────────────── */
 
@@ -24,6 +24,8 @@ export type AgentPodData = AgentSlotData & {
   logs: LogLine[];
   progress: number;
   mood: string;
+  /** Cosmetic alias assigned at session start; falls back to "Agent N". */
+  name?: string;
 };
 
 export type AgentPodsProps = {
@@ -176,7 +178,7 @@ export function AgentPods({
                     </div>
                     <div className="pod-id">
                       <div className="pod-name">
-                        Agent {slot.slotIndex + 1}
+                        {slot.name ?? `Agent ${slot.slotIndex + 1}`}
                       </div>
                       <div className="pod-state live">{slot.mood}</div>
                     </div>
@@ -231,9 +233,6 @@ export function AgentPods({
                       <ExpandIcon size={12} />
                       expand
                     </button>
-                    <button className="btn xs ghost" title="Chat with agent">
-                      <ChatIcon size={12} />
-                    </button>
                     <span className="spacer" />
                     <span className="tag">
                       {Math.round(slot.progress)}%
@@ -250,7 +249,7 @@ export function AgentPods({
                     </div>
                     <div className="pod-id">
                       <div className="pod-name">
-                        Agent {slot.slotIndex + 1}
+                        {slot.name ?? `Agent ${slot.slotIndex + 1}`}
                       </div>
                       <div className="pod-state">idle</div>
                     </div>

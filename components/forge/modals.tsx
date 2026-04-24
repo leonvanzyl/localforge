@@ -105,6 +105,7 @@ export type AgentLogModalProps = {
     running: boolean;
     mood: string;
     logs: Array<{ prompt: string; text: string; cls: string }>;
+    name?: string;
   } | null;
   featureTitle?: string;
 };
@@ -145,7 +146,7 @@ export const AgentLogModal: React.FC<AgentLogModalProps> = ({
         <div style={{ display: "flex", alignItems: "center", gap: 12, marginBottom: 12 }}>
           <Robot seed={agent.slotIndex} size={40} running={agent.running} />
           <div>
-            <h2 style={{ margin: 0, fontSize: 20 }}>Agent {agent.slotIndex + 1}</h2>
+            <h2 style={{ margin: 0, fontSize: 20 }}>{agent.name ?? `Agent ${agent.slotIndex + 1}`}</h2>
             <span
               className="tag"
               style={{ color: agent.running ? "var(--accent)" : "var(--ink-3)" }}

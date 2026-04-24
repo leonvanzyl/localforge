@@ -11,6 +11,7 @@ import { AgentLogModal } from "@/components/forge/modals";
 import { ForgeKanban } from "@/components/forge/forge-kanban";
 import { SettingsIcon } from "@/components/forge/icons";
 import { ProjectSettingsDialog } from "@/components/app-shell/project-settings-dialog";
+import { pickAgentName } from "@/components/forge/agent-names";
 
 type ProjectViewProps = {
   project: {
@@ -39,7 +40,7 @@ type OrchestratorGetResponse = {
   feature?: { id: number; name: string } | null;
 };
 
-const DEFAULT_MAX_AGENTS = 3;
+const DEFAULT_MAX_AGENTS = 1;
 
 type FeatureCountsResponse = {
   features?: Array<{ status: string }>;
@@ -146,10 +147,41 @@ export function ProjectView({ project }: ProjectViewProps) {
         );
         setMaxConcurrentAgents(data.maxConcurrentAgents ?? DEFAULT_MAX_AGENTS);
         setAgentSlots((prev) => {
+          // Names already held by slots that still have the same sessionId
+          // this tick — used to avoid handing the same name to two
+          // concurrent agents when a fresh session needs a name.
+          const namesInUse = new Set<string>();
+          for (let i = 0; i < slotCount; i++) {
+            const slot = serverSlots.find((s) => s.slotIndex === i);
+            const prevSlot = prev.find((p) => p.slotIndex === i);
+            if (
+              slot?.sessionId &&
+              prevSlot?.sessionId === slot.sessionId &&
+              prevSlot.name
+            ) {
+              namesInUse.add(prevSlot.name);
+            }
+          }
+
           return Array.from({ length: slotCount }, (_, i) => {
             const slot = serverSlots.find((s) => s.slotIndex === i);
             const prevSlot = prev.find((p) => p.slotIndex === i);
             if (slot) {
+              // Carry the name forward if this is the same session; pick a
+              // fresh one for a brand-new session; drop it when idle.
+              let name: string | undefined;
+              if (slot.running && slot.sessionId != null) {
+                if (
+                  prevSlot?.sessionId === slot.sessionId &&
+                  prevSlot.name
+                ) {
+                  name = prevSlot.name;
+                } else {
+                  name = pickAgentName(namesInUse);
+                  namesInUse.add(name);
+                }
+              }
+
               return {
                 slotIndex: slot.slotIndex,
                 running: slot.running,
@@ -163,6 +195,7 @@ export function ProjectView({ project }: ProjectViewProps) {
                     ? prevSlot.mood
                     : "working"
                   : "idle",
+                name,
               };
             }
             return {
@@ -417,6 +450,7 @@ export function ProjectView({ project }: ProjectViewProps) {
                     running: expanded.running,
                     mood: expanded.mood,
                     logs: expanded.logs,
+                    name: expanded.name,
                   }
                 : null
             }
