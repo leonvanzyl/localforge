@@ -55,6 +55,7 @@ type ProjectSettingsResponse = {
     model: string | null;
     coder_prompt: string | null;
     dev_server_port: string | null;
+    max_concurrent_agents: string | null;
   };
   effective: {
     provider: string;
@@ -63,6 +64,7 @@ type ProjectSettingsResponse = {
     model: string;
     coder_prompt: string;
     dev_server_port: string;
+    max_concurrent_agents: string;
   };
   defaults: {
     provider: string;
@@ -71,6 +73,7 @@ type ProjectSettingsResponse = {
     model: string;
     coder_prompt: string;
     dev_server_port: string;
+    max_concurrent_agents: string;
   };
 };
 
@@ -102,6 +105,7 @@ export function ProjectSettingsDialog({
   const [model, setModel] = React.useState("");
   const [coderPrompt, setCoderPrompt] = React.useState("");
   const [devServerPort, setDevServerPort] = React.useState("");
+  const [maxConcurrentAgents, setMaxConcurrentAgents] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -134,6 +138,7 @@ export function ProjectSettingsDialog({
         setModel(complete.overrides.model ?? "");
         setCoderPrompt(complete.overrides.coder_prompt ?? "");
         setDevServerPort(complete.overrides.dev_server_port ?? "");
+        setMaxConcurrentAgents(complete.overrides.max_concurrent_agents ?? "");
       } catch (err) {
         if (cancelled) return;
         setError(
@@ -220,6 +225,7 @@ export function ProjectSettingsDialog({
           model,
           coder_prompt: coderPrompt,
           dev_server_port: devServerPort,
+          max_concurrent_agents: maxConcurrentAgents,
         }),
       });
       const payload = (await res.json()) as Partial<ProjectSettingsResponse> & {
@@ -386,6 +392,35 @@ export function ProjectSettingsDialog({
                     : `Using the global default (${data.defaults.dev_server_port}). Playwright screenshots will hit this port.`
                 }
               />
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="project-max-concurrent-agents"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Max concurrent agents
+                </label>
+                <select
+                  id="project-max-concurrent-agents"
+                  name="project-max-concurrent-agents"
+                  data-testid="project-settings-max-concurrent-agents-select"
+                  value={maxConcurrentAgents}
+                  onChange={(e) => setMaxConcurrentAgents(e.target.value)}
+                  disabled={submitting}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <option value="">
+                    Use global default ({data.defaults.max_concurrent_agents})
+                  </option>
+                  <option value="1">1</option>
+                  <option value="2">2</option>
+                  <option value="3">3</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {data.overrides.max_concurrent_agents
+                    ? "Project override is set. Choose 'Use global default' to clear."
+                    : `Using the global default (${data.defaults.max_concurrent_agents}). Lower this on modest hardware — 3 local models in parallel can overload a small GPU.`}
+                </p>
+              </div>
               <div
                 data-testid="project-settings-effective"
                 className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"

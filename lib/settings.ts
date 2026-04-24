@@ -29,6 +29,7 @@ export const GLOBAL_SETTING_KEYS = [
   "working_directory",
   "coder_prompt",
   "dev_server_port",
+  "max_concurrent_agents",
 ] as const;
 
 /**
@@ -43,6 +44,7 @@ export const PROJECT_SETTING_KEYS = [
   "model",
   "coder_prompt",
   "dev_server_port",
+  "max_concurrent_agents",
 ] as const;
 
 export type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
@@ -56,7 +58,18 @@ export const DEFAULT_GLOBAL_SETTINGS: Record<GlobalSettingKey, string> = {
   working_directory: path.join(process.cwd(), "projects"),
   coder_prompt: "",
   dev_server_port: "3000",
+  max_concurrent_agents: "3",
 };
+
+export const MAX_CONCURRENT_AGENTS_HARD_CAP = 3;
+
+function validateMaxConcurrentAgents(raw: string): string | null {
+  const n = Number.parseInt(raw, 10);
+  if (!Number.isFinite(n) || n < 1 || n > MAX_CONCURRENT_AGENTS_HARD_CAP) {
+    return `Max concurrent agents must be 1, 2, or ${MAX_CONCURRENT_AGENTS_HARD_CAP}`;
+  }
+  return null;
+}
 
 function readGlobal(key: GlobalSettingKey): string | null {
   const row = db
@@ -127,6 +140,10 @@ function validate(input: UpdateGlobalSettingsInput): string | null {
   }
   if (input.working_directory !== undefined && !input.working_directory.trim()) {
     return "Working directory cannot be empty";
+  }
+  if (input.max_concurrent_agents !== undefined) {
+    const err = validateMaxConcurrentAgents(input.max_concurrent_agents);
+    if (err) return err;
   }
   return null;
 }
@@ -249,6 +266,10 @@ function validateProjectInput(input: UpdateProjectSettingsInput): string | null 
   }
   if (input.ollama_url) {
     const err = validateUrl("Ollama URL", input.ollama_url);
+    if (err) return err;
+  }
+  if (input.max_concurrent_agents) {
+    const err = validateMaxConcurrentAgents(input.max_concurrent_agents);
     if (err) return err;
   }
   // model accepts any non-empty string, or empty/null to clear.

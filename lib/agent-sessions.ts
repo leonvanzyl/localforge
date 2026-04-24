@@ -82,6 +82,28 @@ export function getActiveSessionForProject(
   return rows[0] ?? null;
 }
 
+/**
+ * Find ALL active (in_progress) sessions for a project of a given type.
+ * Returns them ordered by most-recently started first.
+ */
+export function getActiveSessionsForProject(
+  projectId: number,
+  sessionType: SessionType,
+): AgentSessionRecord[] {
+  return db
+    .select()
+    .from(agentSessions)
+    .where(
+      and(
+        eq(agentSessions.projectId, projectId),
+        eq(agentSessions.sessionType, sessionType),
+        eq(agentSessions.status, "in_progress"),
+      ),
+    )
+    .orderBy(desc(agentSessions.startedAt))
+    .all();
+}
+
 /** Mark a session completed (or another terminal status). */
 export function closeAgentSession(
   id: number,

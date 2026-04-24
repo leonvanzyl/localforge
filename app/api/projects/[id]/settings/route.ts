@@ -52,6 +52,8 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
       ollama_url: globals.ollama_url,
       model: globals.model,
       coder_prompt: globals.coder_prompt,
+      dev_server_port: globals.dev_server_port,
+      max_concurrent_agents: globals.max_concurrent_agents,
     },
   });
 }

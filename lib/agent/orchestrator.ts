@@ -28,7 +28,7 @@ function debugLog(label: string, data?: unknown): void {
 import {
   closeAgentSession,
   createAgentSession,
-  getActiveSessionForProject,
+  getActiveSessionsForProject,
   type AgentSessionRecord,
   type SessionStatus,
 } from "../agent-sessions";
@@ -47,7 +47,11 @@ import {
   getProject,
   markProjectCompletedIfAllDone,
 } from "../projects";
-import { getEffectiveProviderConfig, getProjectEffectiveSettings } from "../settings";
+import {
+  getEffectiveProviderConfig,
+  getProjectEffectiveSettings,
+  MAX_CONCURRENT_AGENTS_HARD_CAP,
+} from "../settings";
 
 /**
  * Coding-agent orchestrator.
@@ -129,6 +133,26 @@ type RunningSession = {
   /** Watchdog timer — kills the runner if it hangs past the session deadline. */
   watchdog?: ReturnType<typeof setTimeout>;
 };
+
+/**
+ * Structural upper bound on concurrent coding agent sessions per project.
+ * The effective per-project limit is resolved from settings via
+ * {@link getMaxConcurrentAgentsForProject} and clamped to this cap.
+ */
+export const MAX_CONCURRENT_AGENTS_CAP = MAX_CONCURRENT_AGENTS_HARD_CAP;
+
+/**
+ * Resolve the effective concurrent-agent limit for a project by reading the
+ * `max_concurrent_agents` setting (project override falls back to global,
+ * default "3"). The value is clamped into [1, {@link MAX_CONCURRENT_AGENTS_CAP}]
+ * so a bad config can't spawn an unbounded number of agents.
+ */
+export function getMaxConcurrentAgentsForProject(projectId: number): number {
+  const eff = getProjectEffectiveSettings(projectId);
+  const n = Number.parseInt(eff.max_concurrent_agents, 10);
+  if (!Number.isFinite(n)) return MAX_CONCURRENT_AGENTS_CAP;
+  return Math.max(1, Math.min(MAX_CONCURRENT_AGENTS_CAP, n));
+}
 
 const SESSION_TIMEOUT_MS = Number.parseInt(
   process.env.LOCALFORGE_SESSION_TIMEOUT_MS ?? String(30 * 60 * 1000),
@@ -233,17 +257,25 @@ export type StartResult = {
   started: boolean;
 };
 
+export type AgentSlot = {
+  slotIndex: number; // 0, 1, 2
+  running: boolean;
+  sessionId?: number;
+  featureId?: number;
+  featureTitle?: string;
+};
+
 /**
  * Start the orchestrator for a project. Picks the highest-priority ready
  * feature, creates the agent_session row, spawns the runner child process,
  * and returns the session + feature.
  *
- * Idempotent: if a coding session is already in progress for the project
- * (including one whose child process is still alive), returns it instead of
- * starting a new one.
+ * Supports up to MAX_CONCURRENT_AGENTS_CAP concurrent coding sessions per
+ * project. If the limit is already reached, throws a 409 error.
  *
  * Throws when:
  *   - the project does not exist
+ *   - max concurrent agents reached
  *   - there is no ready feature to work on
  */
 export function startOrchestrator(projectId: number): StartResult {
@@ -252,21 +284,25 @@ export function startOrchestrator(projectId: number): StartResult {
     throw new OrchestratorError("Project not found", 404);
   }
 
-  // Return any running session as-is (idempotent). Also reconcile a stale
-  // in_progress session row whose child process has died - this keeps the DB
-  // from getting wedged if the dev server crashed mid-run.
-  const existing = getActiveSessionForProject(projectId, "coding");
-  if (existing && getState().running.has(existing.id)) {
-    const rs = getState().running.get(existing.id)!;
-    return {
-      session: rs.session,
-      feature: rs.feature,
-      started: false,
-    };
+  // Reconcile ALL orphaned DB session rows whose child processes have died.
+  // This keeps the DB from getting wedged if the dev server crashed mid-run.
+  const existingSessions = getActiveSessionsForProject(projectId, "coding");
+  for (const existing of existingSessions) {
+    if (!getState().running.has(existing.id)) {
+      // Reap: close the orphaned row so it doesn't count against the limit.
+      closeAgentSession(existing.id, "terminated");
+    }
   }
-  if (existing && !getState().running.has(existing.id)) {
-    // Reap: close the orphaned row so we can create a fresh session below.
-    closeAgentSession(existing.id, "terminated");
+
+  // Check how many sessions are currently running for this project.
+  const runningSessions = getRunningSessionsForProject(projectId);
+  const runningCount = runningSessions.length;
+  const limit = getMaxConcurrentAgentsForProject(projectId);
+  if (runningCount >= limit) {
+    throw new OrchestratorError(
+      `Maximum concurrent agents reached (${runningCount}/${limit})`,
+      409,
+    );
   }
 
   const feature = findNextReadyFeatureForProject(projectId);
@@ -867,10 +903,10 @@ function finalizeSession(
 /**
  * Feature #70 — "orchestrator continues to next feature after completion".
  *
- * After a successful finalize we check whether another backlog feature is
- * ready and, if so, spawn a fresh session for it. Wrapped in `setImmediate`
- * so we unwind the current call stack (releasing the `getState().running`
- * slot we just deleted) before the new `startOrchestrator` runs.
+ * After a successful finalize we check whether there are open agent slots
+ * and ready features, and fill those slots. Wrapped in `setImmediate` so we
+ * unwind the current call stack (releasing the `getState().running` slot we
+ * just deleted) before the new `startOrchestrator` runs.
  *
  * Errors are swallowed + logged — any failure leaves the kanban in its
  * current state and the user can click Start again manually.
@@ -881,14 +917,34 @@ function maybeContinueWithNextFeature(rs: RunningSession): void {
 
   setImmediate(() => {
     try {
-      const next = findNextReadyFeatureForProject(projectId);
-      debugLog("MAYBE_CONTINUE_NEXT_FEATURE", {
+      // Fill all available slots, not just one.
+      const runningCount = getRunningSessionsForProject(projectId).length;
+      const slotsAvailable =
+        getMaxConcurrentAgentsForProject(projectId) - runningCount;
+      debugLog("MAYBE_CONTINUE_SLOTS", {
         projectId,
-        nextFeature: next ? { id: next.id, title: next.title } : null,
+        runningCount,
+        slotsAvailable,
       });
-      if (!next) return;
-      startOrchestrator(projectId);
-      debugLog("MAYBE_CONTINUE_STARTED", { projectId, nextFeatureId: next.id });
+
+      for (let i = 0; i < slotsAvailable; i++) {
+        const next = findNextReadyFeatureForProject(projectId);
+        if (!next) {
+          debugLog("MAYBE_CONTINUE_NO_MORE_FEATURES", { projectId, filledSlots: i });
+          break;
+        }
+        try {
+          startOrchestrator(projectId);
+          debugLog("MAYBE_CONTINUE_STARTED", { projectId, nextFeatureId: next.id, slotFill: i + 1 });
+        } catch (err) {
+          debugLog("MAYBE_CONTINUE_SLOT_ERROR", {
+            projectId,
+            slotFill: i + 1,
+            error: err instanceof Error ? err.message : String(err),
+          });
+          break; // Stop trying to fill more slots if one fails
+        }
+      }
     } catch (err) {
       debugLog("MAYBE_CONTINUE_ERROR", {
         projectId,
@@ -901,6 +957,104 @@ function maybeContinueWithNextFeature(rs: RunningSession): void {
       );
     }
   });
+}
+
+/**
+ * Start agents to fill all available slots for a project.
+ * Returns an array of StartResult for each session that was started.
+ */
+export function startAllAgents(projectId: number): StartResult[] {
+  const project = getProject(projectId);
+  if (!project) {
+    throw new OrchestratorError("Project not found", 404);
+  }
+
+  const results: StartResult[] = [];
+  const runningCount = getRunningSessionsForProject(projectId).length;
+  const slotsAvailable =
+    getMaxConcurrentAgentsForProject(projectId) - runningCount;
+
+  debugLog("START_ALL_AGENTS", { projectId, runningCount, slotsAvailable });
+
+  for (let i = 0; i < slotsAvailable; i++) {
+    const next = findNextReadyFeatureForProject(projectId);
+    if (!next) {
+      debugLog("START_ALL_AGENTS_NO_MORE_FEATURES", { projectId, startedCount: i });
+      break;
+    }
+    try {
+      const result = startOrchestrator(projectId);
+      results.push(result);
+    } catch (err) {
+      debugLog("START_ALL_AGENTS_SLOT_ERROR", {
+        projectId,
+        slotFill: i + 1,
+        error: err instanceof Error ? err.message : String(err),
+      });
+      break;
+    }
+  }
+
+  return results;
+}
+
+/**
+ * Stop all running agent sessions for a project.
+ * Returns an array of results for each session that was stopped.
+ */
+export function stopAllAgents(projectId: number): {
+  stopped: boolean;
+  session: AgentSessionRecord | null;
+}[] {
+  const sessions = getRunningSessionsForProject(projectId);
+  debugLog("STOP_ALL_AGENTS", { projectId, sessionCount: sessions.length });
+
+  const results: { stopped: boolean; session: AgentSessionRecord | null }[] = [];
+  for (const session of sessions) {
+    const result = stopOrchestratorSession(session.id);
+    results.push(result);
+  }
+  return results;
+}
+
+/**
+ * Returns information about all agent slots for a project.
+ * Returns exactly `getMaxConcurrentAgentsForProject(projectId)` slots,
+ * or the running count if it exceeds the configured limit (e.g. a user
+ * just lowered the setting while agents are still in flight).
+ */
+export function getAgentSlots(projectId: number): AgentSlot[] {
+  const slots: AgentSlot[] = [];
+  const runningSessions: RunningSession[] = [];
+
+  for (const rs of getState().running.values()) {
+    if (rs.session.projectId === projectId) {
+      runningSessions.push(rs);
+    }
+  }
+
+  const configured = getMaxConcurrentAgentsForProject(projectId);
+  const slotCount = Math.max(configured, runningSessions.length);
+
+  for (let i = 0; i < slotCount; i++) {
+    const rs = runningSessions[i];
+    if (rs) {
+      slots.push({
+        slotIndex: i,
+        running: true,
+        sessionId: rs.session.id,
+        featureId: rs.feature.id,
+        featureTitle: rs.feature.title,
+      });
+    } else {
+      slots.push({
+        slotIndex: i,
+        running: false,
+      });
+    }
+  }
+
+  return slots;
 }
 
 /**
