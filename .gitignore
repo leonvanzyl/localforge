@@ -31,6 +31,13 @@ npm-debug.log*
 yarn-debug.log*
 yarn-error.log*
 dev-server.log
+agent-runner-debug.log
+
+# Playwright MCP scratch output
+.playwright-mcp/
+
+# Ad-hoc responsive/visual verification screenshots dumped at the repo root
+/after-*.png
 
 # Local scratch / one-off agent files
 .tmp-*
