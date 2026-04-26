@@ -23,7 +23,7 @@ app boots.
 | Node.js | **20 or newer** | `node --version` |
 | npm | ships with Node | |
 | LM Studio | latest | Load `google/gemma-4-31b` and enable the API server on `http://127.0.0.1:1234` |
-| Claude Code / Claude Agent SDK | latest | the coding agents use the SDK with `ANTHROPIC_BASE_URL` pointed at LM Studio |
+| Pi coding-agent SDK | bundled npm dependency | the coding agents use Pi with the configured local OpenAI-compatible provider |
 | Playwright browsers | | `npx playwright install` (run once) |
 
 ## Getting started
@@ -55,7 +55,7 @@ project.
 
 - **Frontend:** Next.js 16 (App Router) + React 19, Tailwind CSS + shadcn/ui, dnd-kit, Sonner
 - **Backend:** Next.js API routes (Node.js), SQLite + Drizzle ORM, Server-Sent Events
-- **Agents:** Claude Agent SDK, configured via `ANTHROPIC_BASE_URL=http://127.0.0.1:1234`
+- **Agents:** Pi coding-agent SDK, configured for LM Studio/Ollama through OpenAI-compatible local endpoints
 - **Testing:** Playwright (`npx playwright test`)
 
 ## Project layout
@@ -68,7 +68,7 @@ components/          React components
   ui/                shadcn/ui primitives
 lib/
   db/                Drizzle schema + SQLite connection
-  agent/             Claude Agent SDK integration + orchestrator
+  agent/             Pi agent integration + orchestrator
 data/                SQLite database file (git-ignored)
 projects/            User-created project folders (git-ignored)
 screenshots/         Playwright captures (git-ignored)
@@ -81,8 +81,8 @@ tests/               Playwright .spec.ts files
 1. You create a project, either manually or by chatting with the AI bootstrapper.
 2. Features land in the **Backlog** column of the kanban, ordered by priority
    and respecting dependencies.
-3. Click **Start Orchestrator** - LocalForge spawns a Claude Agent SDK session
-   pointed at LM Studio, passes the highest-priority ready feature, and
+3. Click **Start Orchestrator** - LocalForge spawns a Pi AgentSession pointed
+   at the configured local model, passes the highest-priority ready feature, and
    moves the card to **In Progress**.
 4. The agent writes code, runs Playwright tests, and captures screenshots.
    Live output streams into the activity panel via SSE.
@@ -92,13 +92,19 @@ tests/               Playwright .spec.ts files
 
 ## Configuration
 
-Per-project settings are stored in `.claude/settings.json` inside each project
+Per-project Pi model metadata is stored in `.pi/models.json` inside each project
 folder, e.g.:
 
 ```json
 {
-  "env": { "ANTHROPIC_BASE_URL": "http://127.0.0.1:1234" },
-  "model": "google/gemma-4-31b"
+  "providers": {
+    "lm_studio": {
+      "baseUrl": "http://127.0.0.1:1234/v1",
+      "api": "openai-completions",
+      "apiKey": "localforge",
+      "models": [{ "id": "google/gemma-4-31b" }]
+    }
+  }
 }
 ```
 

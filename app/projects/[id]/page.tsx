@@ -1,6 +1,10 @@
 import { notFound } from "next/navigation";
 
-import { getProject } from "@/lib/projects";
+import {
+  getProject,
+  isProjectFullyCompleted,
+  reopenProjectIfHasOpenFeatures,
+} from "@/lib/projects";
 import { getActiveSessionForProject } from "@/lib/agent-sessions";
 import { BootstrapperPanel } from "@/components/bootstrapper/bootstrapper-panel";
 import { CompletedProjectView } from "@/components/celebration/completed-project-view";
@@ -20,10 +24,11 @@ export default async function ProjectPage({ params }: PageProps) {
     notFound();
   }
 
-  const project = getProject(numericId);
+  let project = getProject(numericId);
   if (!project) {
     notFound();
   }
+  project = reopenProjectIfHasOpenFeatures(project.id) ?? project;
 
   // If there is an active bootstrapper session for this project, render the
   // AI chat panel instead of the kanban board. The session is created from
@@ -51,7 +56,7 @@ export default async function ProjectPage({ params }: PageProps) {
     );
   }
 
-  if (project.status === "completed") {
+  if (project.status === "completed" && isProjectFullyCompleted(project.id)) {
     return (
       <div
         className="flex min-h-0 flex-1 flex-col"

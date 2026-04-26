@@ -1,14 +1,20 @@
 import { NextRequest, NextResponse } from "next/server";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  createAgentSession,
+  SessionManager,
+} from "@mariozechner/pi-coding-agent";
 import {
   closeAgentSession,
   getAgentSession,
   listChatMessages,
 } from "@/lib/agent-sessions";
 import {
-  buildFeatureCrudMcpServer,
-  FEATURE_CRUD_TOOL_NAMES,
-} from "@/lib/agent/feature-crud-mcp";
+  buildFeatureCrudTools,
+} from "@/lib/agent/feature-crud-tools";
+import {
+  createPiModelRuntime,
+  createPiResourceLoader,
+} from "@/lib/agent/pi-runtime";
 import { listFeaturesForProject } from "@/lib/features";
 import { getProject } from "@/lib/projects";
 import { getEffectiveProviderConfig } from "@/lib/settings";
@@ -29,7 +35,7 @@ const FEATURE_GEN_SYSTEM_PROMPT = `You are LocalForge's feature-generation agent
 
 You are given a user/assistant chat describing an app the user wants to build.
 Your job is to turn that conversation into a complete backlog of 6-15 features
-by calling the MCP tools exposed under the "feature-crud" server. You have
+by calling the provided LocalForge feature tools. You have
 NO access to files, bash, or the user. Every change must go through a tool.
 
 Workflow:
@@ -62,12 +68,9 @@ your assistant text. All structured output goes through the tools.`;
  *
  * Feature #59 — AI generates the feature list and populates the kanban.
  *
- * Invokes the Claude Agent SDK with an in-process "feature-crud" MCP
- * server that exposes CRUD + dependency tools scoped to this session's
- * project. The agent reads the bootstrapper chat transcript and calls
- * the tools to build the backlog. LM Studio is used by setting
- * ANTHROPIC_BASE_URL in the subprocess env — the SDK itself drives all
- * HTTP traffic; we never hit the OpenAI-compatible endpoint directly.
+ * Invokes a Pi AgentSession with custom feature CRUD tools scoped to this
+ * session's project. Built-in filesystem and shell tools are disabled for
+ * this task, so every mutation goes through the validated feature APIs.
  *
  * When the agent finishes, we check the DB for newly-created features,
  * close the bootstrapper session, and return the count so the UI can
@@ -113,58 +116,64 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
   const abort = new AbortController();
   req.signal.addEventListener("abort", () => abort.abort(), { once: true });
 
-  const mcpServer = buildFeatureCrudMcpServer(project.id);
-
   const toolCalls: Array<{ name: string; input: unknown }> = [];
   let finalAssistantText = "";
-  let resultSubtype: string | undefined;
+  let turns = 0;
 
   try {
-    for await (const message of query({
-      prompt: `The bootstrapper chat transcript follows. Generate the backlog now.\n\n${transcript}`,
-      options: {
-        systemPrompt: FEATURE_GEN_SYSTEM_PROMPT,
-        mcpServers: { "feature-crud": mcpServer },
-        allowedTools: [...FEATURE_CRUD_TOOL_NAMES],
-        // Disable every built-in tool — the agent has no reason to touch
-        // the filesystem or shell for this task.
-        tools: [],
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        env: {
-          ...process.env,
-          ANTHROPIC_BASE_URL: effective.baseUrl,
-        },
-        model: effective.model,
-        cwd: project.folderPath,
-        maxTurns: 40,
-        abortController: abort,
-      },
-    })) {
-      if (message.type === "assistant") {
-        const blocks = message.message.content as Array<{
-          type: string;
-          name?: string;
-          input?: unknown;
-          text?: string;
-        }>;
-        for (const block of blocks) {
-          if (block.type === "tool_use" && typeof block.name === "string") {
-            toolCalls.push({ name: block.name, input: block.input });
-            console.log(
-              `[generate-features] tool_use ${block.name}`,
-              JSON.stringify(block.input).slice(0, 300),
-            );
-          } else if (block.type === "text" && typeof block.text === "string") {
-            finalAssistantText = block.text;
-          }
-        }
-      } else if (message.type === "result") {
-        resultSubtype = message.subtype;
+    const piRuntime = createPiModelRuntime(effective);
+    const resourceLoader = await createPiResourceLoader({
+      cwd: project.folderPath,
+      systemPrompt: FEATURE_GEN_SYSTEM_PROMPT,
+      noContextFiles: true,
+    });
+    const { session: piSession } = await createAgentSession({
+      cwd: project.folderPath,
+      authStorage: piRuntime.authStorage,
+      modelRegistry: piRuntime.modelRegistry,
+      model: piRuntime.model,
+      thinkingLevel: "off",
+      sessionManager: SessionManager.inMemory(project.folderPath),
+      resourceLoader,
+      noTools: "builtin",
+      customTools: buildFeatureCrudTools(project.id),
+    });
+
+    const unsubscribe = piSession.subscribe((event) => {
+      if (event.type === "tool_execution_start") {
+        toolCalls.push({ name: event.toolName, input: event.args });
         console.log(
-          `[generate-features] result subtype=${message.subtype} turns=${message.num_turns}`,
+          `[generate-features] tool_use ${event.toolName}`,
+          JSON.stringify(event.args).slice(0, 300),
         );
+      } else if (
+        event.type === "message_update" &&
+        event.assistantMessageEvent.type === "text_delta"
+      ) {
+        finalAssistantText += event.assistantMessageEvent.delta;
+      } else if (event.type === "turn_end") {
+        turns++;
+        if (turns >= 40) {
+          void piSession.abort();
+        }
       }
+    });
+
+    abort.signal.addEventListener("abort", () => void piSession.abort(), {
+      once: true,
+    });
+
+    try {
+      await piSession.prompt(
+        `The bootstrapper chat transcript follows. Generate the backlog now.\n\n${transcript}`,
+        {
+          expandPromptTemplates: false,
+          source: "extension",
+        },
+      );
+    } finally {
+      unsubscribe();
+      piSession.dispose();
     }
   } catch (err) {
     const msg = err instanceof Error ? err.message : String(err);
@@ -184,7 +193,7 @@ export async function POST(req: NextRequest, ctx: RouteContext) {
         error:
           "The agent finished without creating any features. Try again with a clearer description.",
         toolCalls: toolCalls.length,
-        resultSubtype,
+        turns,
         summary: finalAssistantText.slice(0, 500),
       },
       { status: 502 },

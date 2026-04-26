@@ -215,6 +215,33 @@ export function SettingsForm({ initial }: { initial: FormState }) {
           projects can override this in their own settings.
         </p>
       </div>
+      <div className="flex flex-col gap-2">
+        <label
+          htmlFor="playwright_enabled"
+          className="text-sm font-medium text-foreground"
+        >
+          Playwright verification
+        </label>
+        <select
+          id="playwright_enabled"
+          name="playwright_enabled"
+          data-testid="settings-playwright-enabled-select"
+          value={values.playwright_enabled}
+          onChange={(e) => update("playwright_enabled", e.target.value)}
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <option value="false">Disabled (default)</option>
+          <option value="true">Enabled</option>
+        </select>
+        <p className="text-xs text-muted-foreground">
+          When enabled, every completed feature is verified by launching
+          Chromium against http://localhost:&lt;dev port&gt; and a screenshot
+          is captured. Many small local models can&apos;t drive a browser
+          reliably, so this is off by default — the coding agent&apos;s own
+          success signal becomes the outcome. Individual projects can
+          override this in their own settings.
+        </p>
+      </div>
       <div className="flex items-center gap-3">
         <Button
           type="submit"

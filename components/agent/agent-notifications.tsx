@@ -156,8 +156,6 @@ function fireBrowserNotification(featureName: string | null): boolean {
     const notification = new Notification("LocalForge", {
       body,
       tag: "localforge-feature-completed",
-      // Don't auto-renotify if the same tag fires rapidly.
-      renotify: false,
     });
     // Clicking the OS-level notification focuses the window so the user can
     // see which feature just completed on the kanban.

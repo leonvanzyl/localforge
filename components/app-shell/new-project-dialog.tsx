@@ -22,7 +22,7 @@ import { useShell } from "./shell-context";
  * Modal for creating a new project.
  *
  * Wired to POST /api/projects, which creates the SQLite row AND the
- * project folder on disk with a generated .claude/settings.json.
+ * project folder on disk with a generated .pi/models.json.
  *
  * Users pick one of two creation modes:
  *   - "Start blank"           → the kanban board opens empty.
@@ -139,12 +139,19 @@ export function NewProjectDialog() {
       labelledBy="new-project-title"
     >
       <DialogCloseButton onClick={closeNewProjectDialog} />
-      <form onSubmit={handleSubmit} data-testid="new-project-form">
+      <form
+        onSubmit={handleSubmit}
+        data-testid="new-project-form"
+        // `contents` keeps the form layout-transparent so DialogBody/Footer
+        // become direct flex children of the dialog panel and the panel's
+        // viewport-height cap can engage the body's overflow-y-auto.
+        className="contents"
+      >
         <DialogHeader>
           <DialogTitle id="new-project-title">Create new project</DialogTitle>
           <DialogDescription>
             Give your project a name. LocalForge will create a folder on disk
-            and generate an .claude/settings.json for agent sessions.
+            and generate a .pi/models.json for agent sessions.
           </DialogDescription>
         </DialogHeader>
         <DialogBody className="space-y-4">

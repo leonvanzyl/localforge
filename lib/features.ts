@@ -126,6 +126,13 @@ function ensureProjectExists(projectId: number): void {
   }
 }
 
+function reopenProjectIfFeatureIsOpen(projectId: number): void {
+  db.update(projects)
+    .set({ status: "active", updatedAt: new Date().toISOString() })
+    .where(and(eq(projects.id, projectId), eq(projects.status, "completed")))
+    .run();
+}
+
 /** List all features for a given project, ordered by priority then id. */
 export function listFeaturesForProject(projectId: number): FeatureRecord[] {
   return db
@@ -183,6 +190,9 @@ export function createFeature(input: CreateFeatureInput): FeatureRecord {
     })
     .returning()
     .get();
+  if (inserted.status !== "completed") {
+    reopenProjectIfFeatureIsOpen(inserted.projectId);
+  }
   return inserted;
 }
 
@@ -212,14 +222,17 @@ export function updateFeature(
   if (category !== undefined) patch.category = category;
   if (typeof input.priority === "number") patch.priority = input.priority;
 
-  return (
+  const updated =
     db
       .update(features)
       .set(patch)
       .where(eq(features.id, id))
       .returning()
-      .get() ?? null
-  );
+      .get() ?? null;
+  if (updated && updated.status !== "completed") {
+    reopenProjectIfFeatureIsOpen(updated.projectId);
+  }
+  return updated;
 }
 
 export function deleteFeature(id: number): boolean {

@@ -21,7 +21,7 @@ import { useShell } from "./shell-context";
 /**
  * Sidebar navigation for the LocalForge app shell.
  *
- * Claude Code desktop-inspired layout: the sidebar is visible on the left
+ * Desktop coding-agent-inspired layout: the sidebar is visible on the left
  * at all desktop widths and collapses behind a hamburger menu on mobile.
  *
  * The project list and dialog state come from the ShellProvider context so

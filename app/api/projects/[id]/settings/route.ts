@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 
-import { getProject, writeProjectClaudeSettings } from "@/lib/projects";
+import { getProject, writeProjectPiSettings } from "@/lib/projects";
 import {
   getGlobalSettings,
   getProjectEffectiveSettings,
@@ -54,6 +54,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
       coder_prompt: globals.coder_prompt,
       dev_server_port: globals.dev_server_port,
       max_concurrent_agents: globals.max_concurrent_agents,
+      playwright_enabled: globals.playwright_enabled,
     },
   });
 }
@@ -71,9 +72,8 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
  *   - Empty string or explicit null clears the override (falls back to global).
  *   - Omitting the key leaves the existing override unchanged.
  *
- * After persisting overrides to SQLite, the project's on-disk
- * `.claude/settings.json` is regenerated so the Claude Agent SDK picks up
- * the new values on its next run.
+ * After persisting overrides to SQLite, the project's on-disk `.pi/models.json`
+ * is regenerated so Pi can use the new values on its next run.
  */
 export async function PUT(req: NextRequest, ctx: RouteContext) {
   const { id } = await ctx.params;
@@ -98,9 +98,9 @@ export async function PUT(req: NextRequest, ctx: RouteContext) {
       projectId,
       (body ?? {}) as UpdateProjectSettingsInput,
     );
-    // Keep the on-disk .claude/settings.json in sync with the DB so the
-    // agent session sees the most recent config on its next spawn.
-    writeProjectClaudeSettings(project);
+    // Keep the on-disk .pi/models.json in sync with the DB so the agent
+    // session sees the most recent config on its next spawn.
+    writeProjectPiSettings(project);
 
     const effective = getProjectEffectiveSettings(projectId);
     return NextResponse.json({ overrides, effective });

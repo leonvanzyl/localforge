@@ -59,7 +59,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
   const ext = path.extname(resolved).toLowerCase();
   const contentType = CONTENT_TYPE_BY_EXT[ext] ?? "application/octet-stream";
 
-  return new Response(buffer, {
+  return new Response(new Uint8Array(buffer), {
     headers: {
       "Content-Type": contentType,
       // Short cache — screenshots can be re-captured on subsequent runs but

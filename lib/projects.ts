@@ -10,6 +10,7 @@ import {
   agentSessions,
   agentLogs,
 } from "./db/schema";
+import { createPiLocalModel } from "./agent/pi-model-config";
 import { getEffectiveProviderConfig } from "./settings";
 
 /**
@@ -25,9 +26,9 @@ import { getEffectiveProviderConfig } from "./settings";
  *   without touching the project code.
  * - Folder paths are slugified from the project name to keep them filesystem-
  *   safe. Collisions get a numeric suffix.
- * - We always generate a `.claude/settings.json` inside the project folder so
- *   downstream agents (orchestrator, bootstrapper) inherit the LM Studio
- *   configuration. Defaults match app_spec.txt.
+ * - We always generate a `.pi/models.json` inside the project folder so Pi
+ *   can also be used directly from that folder with the same local model
+ *   configuration LocalForge passes to its in-process runtime.
  */
 
 const DEFAULT_WORKING_DIR = path.join(process.cwd(), "projects");
@@ -106,46 +107,51 @@ function pickUniqueFolder(base: string, slug: string): string {
   return candidate;
 }
 
-function writeClaudeSettings(folderPath: string): void {
-  const claudeDir = path.join(folderPath, ".claude");
-  fs.mkdirSync(claudeDir, { recursive: true });
-  const { baseUrl, model } = getEffectiveProviderConfig(null);
-  const settingsContent = {
-    env: {
-      ANTHROPIC_BASE_URL: baseUrl,
+function writePiSettingsFile(
+  folderPath: string,
+  config: ReturnType<typeof getEffectiveProviderConfig>,
+): void {
+  const piDir = path.join(folderPath, ".pi");
+  fs.mkdirSync(piDir, { recursive: true });
+  const localModel = createPiLocalModel(config);
+  const modelsContent = {
+    providers: {
+      [localModel.provider]: {
+        baseUrl: localModel.baseUrl,
+        api: localModel.api,
+        apiKey: "localforge",
+        compat: localModel.compat,
+        models: [
+          {
+            id: localModel.id,
+            name: localModel.name,
+            reasoning: localModel.reasoning,
+            input: localModel.input,
+            contextWindow: localModel.contextWindow,
+            maxTokens: localModel.maxTokens,
+            cost: localModel.cost,
+          },
+        ],
+      },
     },
-    model,
   };
   fs.writeFileSync(
-    path.join(claudeDir, "settings.json"),
-    JSON.stringify(settingsContent, null, 2),
+    path.join(piDir, "models.json"),
+    JSON.stringify(modelsContent, null, 2),
     "utf8",
   );
 }
 
 /**
- * Regenerate `.claude/settings.json` for an existing project using its
- * effective settings (project overrides take precedence over globals).
- * Called by the project-settings API after a save so the on-disk file
- * stays in sync with the database.
+ * Regenerate `.pi/models.json` for an existing project using its effective
+ * settings (project overrides take precedence over globals). Called by the
+ * project-settings API after a save so the on-disk file stays in sync with
+ * the database.
  *
  * Idempotent: always writes the full JSON object from scratch.
  */
-export function writeProjectClaudeSettings(project: ProjectRecord): void {
-  const { baseUrl, model } = getEffectiveProviderConfig(project.id);
-  const claudeDir = path.join(project.folderPath, ".claude");
-  fs.mkdirSync(claudeDir, { recursive: true });
-  const settingsContent = {
-    env: {
-      ANTHROPIC_BASE_URL: baseUrl,
-    },
-    model,
-  };
-  fs.writeFileSync(
-    path.join(claudeDir, "settings.json"),
-    JSON.stringify(settingsContent, null, 2),
-    "utf8",
-  );
+export function writeProjectPiSettings(project: ProjectRecord): void {
+  writePiSettingsFile(project.folderPath, getEffectiveProviderConfig(project.id));
 }
 
 export function listProjects(): ProjectRecord[] {
@@ -220,7 +226,7 @@ export function createProject(input: CreateProjectInput): ProjectRecord {
   fs.mkdirSync(folderPath, { recursive: true });
 
   try {
-    writeClaudeSettings(folderPath);
+    writePiSettingsFile(folderPath, getEffectiveProviderConfig(null));
 
     const inserted = db
       .insert(projects)
@@ -326,6 +332,34 @@ export type ProjectCompletionStats = {
   completedAt: string | null;
   durationMs: number | null;
 };
+
+export function isProjectFullyCompleted(projectId: number): boolean {
+  const featureRows = db
+    .select({ status: features.status })
+    .from(features)
+    .where(eq(features.projectId, projectId))
+    .all();
+
+  return (
+    featureRows.length > 0 &&
+    featureRows.every((feature) => feature.status === "completed")
+  );
+}
+
+/**
+ * If a previously completed project gets new backlog work, make it runnable
+ * again. This covers user-added follow-up features and manual status changes.
+ */
+export function reopenProjectIfHasOpenFeatures(
+  projectId: number,
+): ProjectRecord | null {
+  const project = getProject(projectId);
+  if (!project) return null;
+  if (project.status !== "completed") return project;
+
+  if (isProjectFullyCompleted(projectId)) return project;
+  return updateProject(projectId, { status: "active" });
+}
 
 /**
  * Compute summary numbers for the celebration screen. Returns `null` when the
@@ -476,7 +510,7 @@ export function markProjectCompletedIfAllDone(
     .all();
 
   if (rows.length === 0) return null;
-  if (!rows.every((r) => r.status === "completed")) return null;
+  if (!isProjectFullyCompleted(projectId)) return null;
 
   return updateProject(projectId, { status: "completed" });
 }

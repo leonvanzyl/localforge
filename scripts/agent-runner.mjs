@@ -3,7 +3,7 @@
  * Coding-agent runner. Spawned as a Node.js child process by the
  * orchestrator (lib/agent/orchestrator.ts) for every feature it picks up.
  *
- * This script drives a real @anthropic-ai/claude-agent-sdk `query()` session
+ * This script drives a real @mariozechner/pi-coding-agent AgentSession
  * against the active local-model provider (LM Studio or Ollama) and streams
  * the agent's tool calls + prose back to the parent over stdout as JSON lines.
  * The orchestrator parses those lines into agent_log rows and fans them out
@@ -28,15 +28,13 @@
  *                        The orchestrator writes this before spawning and
  *                        deletes it afterwards.
  *   --project-dir <s>    absolute path to the project folder on disk (cwd
- *                        for the SDK session)
- *   --base-url <s>       ANTHROPIC_BASE_URL for the SDK (LM Studio / Ollama)
+ *                        for the Pi session)
+ *   --base-url <s>       local provider base URL (LM Studio / Ollama)
  *   --provider <s>       active provider id (e.g. "lm_studio", "ollama")
- *   --model <s>          model name passed through to the SDK
+ *   --model <s>          model name passed through to Pi
  *
  * Environment:
- *   ANTHROPIC_BASE_URL        forwarded to the SDK (also set explicitly in
- *                             the query() options so it is unambiguous).
- *   LOCALFORGE_MAX_TURNS      optional override for the SDK's maxTurns
+ *   LOCALFORGE_MAX_TURNS      optional turn limit for the Pi session
  *                             (default 100). Project-scaffolding features
  *                             (create-next-app + shadcn init + drizzle +
  *                             repeated `npm run build` fixes) can easily
@@ -45,12 +43,27 @@
  *   LOCALFORGE_PLAYWRIGHT_BASE_URL
  *                             baseURL the post-run verification Playwright
  *                             run navigates to. Defaults to http://localhost:7777.
+ *   LOCALFORGE_PLAYWRIGHT_ENABLED
+ *                             "true" to run the post-run Playwright
+ *                             verification phase, "false" (default) to skip
+ *                             it entirely. Driven by global / per-project
+ *                             settings via the orchestrator. Many small
+ *                             local models can't reliably drive a browser,
+ *                             so the default is off; the coding agent's
+ *                             own success signal is treated as sufficient.
  */
 
 import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
-import { query } from "@anthropic-ai/claude-agent-sdk";
+import {
+  AuthStorage,
+  createAgentSession,
+  DefaultResourceLoader,
+  getAgentDir,
+  ModelRegistry,
+  SessionManager,
+} from "@mariozechner/pi-coding-agent";
 
 /**
  * Absolute path of the harness repo root. Playwright screenshots land under
@@ -89,7 +102,6 @@ debugLog("STARTUP", {
   nodeVersion: process.version,
   cwd: process.cwd(),
   env: {
-    ANTHROPIC_BASE_URL: process.env.ANTHROPIC_BASE_URL ?? "(unset)",
     LOCALFORGE_MAX_TURNS: process.env.LOCALFORGE_MAX_TURNS ?? "(unset)",
     LOCALFORGE_MAX_RETRIES: process.env.LOCALFORGE_MAX_RETRIES ?? "(unset)",
     LOCALFORGE_RETRY_DELAY_MS: process.env.LOCALFORGE_RETRY_DELAY_MS ?? "(unset)",
@@ -137,6 +149,62 @@ function truncate(str, max) {
   return s.slice(0, max - 1) + "…";
 }
 
+function ensureOpenAiBaseUrl(baseUrl) {
+  const trimmed = String(baseUrl ?? "").trim().replace(/\/+$/, "");
+  return trimmed.endsWith("/v1") ? trimmed : `${trimmed}/v1`;
+}
+
+function piProviderName(provider) {
+  return provider === "ollama" ? "ollama" : "lm_studio";
+}
+
+function createPiLocalModel({ provider, baseUrl, model }) {
+  const piProvider = piProviderName(provider);
+  return {
+    id: model,
+    name: model,
+    api: "openai-completions",
+    provider: piProvider,
+    baseUrl: ensureOpenAiBaseUrl(baseUrl),
+    reasoning: false,
+    input: ["text"],
+    cost: {
+      input: 0,
+      output: 0,
+      cacheRead: 0,
+      cacheWrite: 0,
+    },
+    contextWindow: 128000,
+    maxTokens: 16384,
+    compat: {
+      supportsDeveloperRole: false,
+      supportsReasoningEffort: false,
+      supportsUsageInStreaming: false,
+      supportsStrictMode: false,
+      maxTokensField: "max_tokens",
+    },
+  };
+}
+
+function createPiModelRuntime(config) {
+  const localModel = createPiLocalModel(config);
+  const authStorage = AuthStorage.inMemory();
+  authStorage.setRuntimeApiKey(localModel.provider, "localforge");
+  const modelRegistry = ModelRegistry.inMemory(authStorage);
+  modelRegistry.registerProvider(localModel.provider, {
+    baseUrl: localModel.baseUrl,
+    apiKey: "localforge",
+    api: localModel.api,
+    models: [localModel],
+  });
+  return {
+    authStorage,
+    modelRegistry,
+    model: modelRegistry.find(localModel.provider, localModel.id) ?? localModel,
+    baseUrl: localModel.baseUrl,
+  };
+}
+
 /**
  * Summarise a tool-use block into a single human-readable action line. The
  * UI renders these verbatim in the activity panel, so keep them short and
@@ -145,35 +213,30 @@ function truncate(str, max) {
 function summariseToolUse(name, input) {
   const inp = input && typeof input === "object" ? input : {};
   switch (name) {
-    case "Read": {
+    case "read": {
       const p = inp.file_path ?? inp.path ?? "";
       return p ? `Reading ${p}` : "Reading file";
     }
-    case "Write": {
+    case "write": {
       const p = inp.file_path ?? inp.path ?? "";
       return p ? `Writing ${p}` : "Writing file";
     }
-    case "Edit":
-    case "NotebookEdit": {
+    case "edit": {
       const p = inp.file_path ?? inp.path ?? "";
       return p ? `Editing ${p}` : "Editing file";
     }
-    case "Bash": {
+    case "bash": {
       const cmd = truncate(inp.command ?? "", 160);
       return cmd ? `Running: ${cmd}` : "Running bash";
     }
-    case "Grep": {
+    case "grep": {
       const pat = inp.pattern ?? "";
       return pat ? `Searching for ${truncate(pat, 80)}` : "Searching";
     }
-    case "Glob": {
+    case "find":
+    case "ls": {
       const pat = inp.pattern ?? "";
-      return pat ? `Globbing ${pat}` : "Globbing";
-    }
-    case "WebFetch":
-    case "WebSearch": {
-      const q = inp.url ?? inp.query ?? "";
-      return q ? `${name}: ${truncate(q, 120)}` : name;
+      return pat ? `Finding ${pat}` : name === "ls" ? "Listing files" : "Finding files";
     }
     default: {
       const summary = truncate(JSON.stringify(inp), 160);
@@ -301,7 +364,7 @@ function buildCodingSystemPrompt(projectDir, additionalInstructions, devServerPo
   const base = `You are LocalForge's coding agent.
 
 You have been handed ONE backlog feature for a local project. Implement it
-end-to-end using the tools available (Read, Write, Edit, Bash, Grep, Glob).
+end-to-end using the tools available (read, write, edit, bash, grep, find, ls).
 
 THE WORKSPACE IS ${projectDir}
 This is your cwd and the ONLY directory you may modify. Every path you pass
@@ -344,24 +407,11 @@ if "Additional project-specific instructions" below seems to suggest one.`;
 }
 
 /**
- * Workspace guard: a `PreToolUse` hook that denies any file-writing or
- * shell-escape whose target path is outside the project directory. This is
- * the enforcement layer — the system prompt tells the model the rule, but
- * we do not trust a local model to follow it.
- *
- * We use a PreToolUse hook (not a `canUseTool` callback) because hooks run
- * regardless of `permissionMode`, which lets us keep `bypassPermissions`
- * for the rest of the SDK's default rules. With `canUseTool` alone the SDK
- * would still route absolute-path Writes through its built-in permission
- * checks before reaching our callback, which was causing all Writes to be
- * denied even when we wanted to allow them.
- *
- * Read-only tools (Read, Grep, Glob, WebFetch, WebSearch, ...) are allowed
- * unconditionally so the agent can consult config above the project dir if
- * it wants to. Bash is the fuzzy case — we scan its command string for
- * absolute paths that resolve outside the root and deny on a match.
+ * Workspace guard: a Pi extension that blocks file mutations or shell
+ * commands whose target path is outside the project directory. The system
+ * prompt states the rule, but this is the enforcement layer.
  */
-function makeWorkspaceGuardHook(projectDir, onDenied) {
+function makeWorkspaceGuardExtension(projectDir, onDenied) {
   const root = path.resolve(projectDir);
 
   function isInsideRoot(candidate) {
@@ -379,11 +429,10 @@ function makeWorkspaceGuardHook(projectDir, onDenied) {
 
   function check(toolName, input) {
     if (
-      toolName === "Write" ||
-      toolName === "Edit" ||
-      toolName === "NotebookEdit"
+      toolName === "write" ||
+      toolName === "edit"
     ) {
-      const raw = input?.file_path ?? input?.notebook_path ?? input?.path;
+      const raw = input?.path;
       if (typeof raw !== "string" || raw.length === 0) return null;
       if (!isInsideRoot(raw)) {
         const resolved = path.resolve(root, raw);
@@ -392,7 +441,7 @@ function makeWorkspaceGuardHook(projectDir, onDenied) {
       return null;
     }
 
-    if (toolName === "Bash") {
+    if (toolName === "bash") {
       const cmd = String(input?.command ?? "");
       if (!cmd) return null;
       let m;
@@ -422,26 +471,17 @@ function makeWorkspaceGuardHook(projectDir, onDenied) {
       return null;
     }
 
-    // Read/Grep/Glob/WebFetch/WebSearch/... — we care about modifications,
-    // not reads.
+    // read/grep/find/ls are allowed; we care about modifications, not reads.
     return null;
   }
 
-  return async function preToolUseHook(input) {
-    if (input?.hook_event_name !== "PreToolUse") {
-      return { continue: true };
-    }
-    const reason = check(input.tool_name, input.tool_input);
-    if (!reason) return { continue: true };
-    onDenied?.(input.tool_name, reason);
-    return {
-      continue: true,
-      hookSpecificOutput: {
-        hookEventName: "PreToolUse",
-        permissionDecision: "deny",
-        permissionDecisionReason: reason,
-      },
-    };
+  return function workspaceGuardExtension(pi) {
+    pi.on("tool_call", (event) => {
+      const reason = check(event.toolName, event.input);
+      if (!reason) return undefined;
+      onDenied?.(event.toolName, reason);
+      return { block: true, reason };
+    });
   };
 }
 
@@ -506,21 +546,21 @@ function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
 
-async function runCodingAgentOnce({ feature, projectDir, baseUrl, model, abort, coderPrompt, devServerPort }) {
+async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, model, abort, coderPrompt, devServerPort }) {
   const maxTurns = Number.parseInt(
     process.env.LOCALFORGE_MAX_TURNS ?? "1000",
     10,
   );
   const userPrompt = buildUserPrompt(feature);
-  const workspaceHook = makeWorkspaceGuardHook(
+  const workspaceGuardExtension = makeWorkspaceGuardExtension(
     projectDir,
     (toolName, message) => {
-      debugLog("WORKSPACE_HOOK_BLOCKED", { toolName, message });
+      debugLog("WORKSPACE_GUARD_BLOCKED", { toolName, message });
       emitLog(`Blocked ${toolName}: ${message}`, "error");
     },
   );
 
-  debugLog("SDK_SESSION_START", {
+  debugLog("PI_SESSION_START", {
     featureId: feature.id,
     featureTitle: feature.title,
     model,
@@ -531,67 +571,112 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, model, abort, 
 
   let toolCalls = 0;
   let lastAssistantText = "";
-  let resultSubtype;
+  let resultSubtype = "success";
   let errorMessage = null;
   let messageCount = 0;
+  let turns = 0;
+  let maxTurnsExceeded = false;
 
   try {
-    for await (const message of query({
-      prompt: userPrompt,
-      options: {
-        systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort),
-        permissionMode: "bypassPermissions",
-        allowDangerouslySkipPermissions: true,
-        hooks: {
-          PreToolUse: [{ hooks: [workspaceHook] }],
-        },
-        env: {
-          ...process.env,
-          ANTHROPIC_BASE_URL: baseUrl,
-        },
-        model,
-        cwd: projectDir,
-        maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? maxTurns : 100,
-        abortController: abort,
-      },
-    })) {
+    const piRuntime = createPiModelRuntime({ provider, baseUrl, model });
+    const loader = new DefaultResourceLoader({
+      cwd: projectDir,
+      agentDir: getAgentDir(),
+      noExtensions: true,
+      noSkills: true,
+      noPromptTemplates: true,
+      noThemes: true,
+      systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort),
+      extensionFactories: [workspaceGuardExtension],
+    });
+    await loader.reload();
+
+    const { session } = await createAgentSession({
+      cwd: projectDir,
+      authStorage: piRuntime.authStorage,
+      modelRegistry: piRuntime.modelRegistry,
+      model: piRuntime.model,
+      thinkingLevel: "off",
+      sessionManager: SessionManager.inMemory(projectDir),
+      resourceLoader: loader,
+      tools: ["read", "bash", "edit", "write", "grep", "find", "ls"],
+    });
+
+    const unsubscribe = session.subscribe((event) => {
       messageCount++;
-      debugLog("SDK_MESSAGE", {
+      debugLog("PI_EVENT", {
         messageCount,
-        type: message.type,
-        subtype: message.subtype ?? null,
-        hasContent: message.type === "assistant" ? Array.isArray(message?.message?.content) : undefined,
+        type: event.type,
+        toolName: event.type === "tool_execution_start" ? event.toolName : undefined,
       });
 
-      if (message.type === "assistant") {
-        const blocks = Array.isArray(message?.message?.content)
-          ? message.message.content
-          : [];
-        for (const block of blocks) {
-          if (!block || typeof block !== "object") continue;
-          if (block.type === "tool_use" && typeof block.name === "string") {
-            toolCalls++;
-            debugLog("SDK_TOOL_USE", { toolCalls, name: block.name });
-            emitLog(summariseToolUse(block.name, block.input), "action");
-          } else if (block.type === "text" && typeof block.text === "string") {
-            const text = block.text.trim();
-            if (text) {
-              lastAssistantText = text;
-              emitLog(truncate(text, 600), "info");
-            }
+      if (event.type === "tool_execution_start") {
+        toolCalls++;
+        debugLog("PI_TOOL_USE", { toolCalls, name: event.toolName });
+        emitLog(summariseToolUse(event.toolName, event.args), "action");
+      } else if (
+        event.type === "message_update" &&
+        event.assistantMessageEvent.type === "text_delta"
+      ) {
+        const delta = event.assistantMessageEvent.delta;
+        if (delta) {
+          lastAssistantText += delta;
+        }
+      } else if (event.type === "message_end") {
+        const message = event.message;
+        if (message?.role === "assistant" && Array.isArray(message.content)) {
+          const text = message.content
+            .filter((block) => block?.type === "text" && typeof block.text === "string")
+            .map((block) => block.text.trim())
+            .filter(Boolean)
+            .join("\n");
+          if (text) {
+            lastAssistantText = text;
+            emitLog(truncate(text, 600), "info");
+          }
+          if (message.stopReason === "error" || message.stopReason === "aborted") {
+            resultSubtype = message.stopReason;
+            errorMessage = message.errorMessage ?? message.stopReason;
           }
         }
-      } else if (message.type === "result") {
-        resultSubtype = message.subtype;
-        debugLog("SDK_RESULT", { subtype: resultSubtype, messageCount, toolCalls });
-        debugLog("SDK_RESULT_BREAKING_LOOP", "result message received — exiting for-await loop");
-        break;
+      } else if (event.type === "turn_end") {
+        turns++;
+        if (
+          Number.isFinite(maxTurns) &&
+          maxTurns > 0 &&
+          turns >= maxTurns
+        ) {
+          maxTurnsExceeded = true;
+          resultSubtype = "max_turns";
+          errorMessage = `maximum turn count reached (${maxTurns})`;
+          void session.abort();
+        }
       }
+    });
+
+    abort.signal.addEventListener("abort", () => void session.abort(), {
+      once: true,
+    });
+
+    try {
+      await session.prompt(userPrompt, {
+        expandPromptTemplates: false,
+        source: "extension",
+      });
+    } finally {
+      unsubscribe();
+      session.dispose();
     }
-    debugLog("SDK_LOOP_EXITED_NORMALLY", { messageCount, toolCalls, resultSubtype });
+    debugLog("PI_LOOP_EXITED_NORMALLY", {
+      messageCount,
+      toolCalls,
+      resultSubtype,
+      turns,
+      maxTurnsExceeded,
+    });
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
-    debugLog("SDK_LOOP_ERROR", {
+    debugLog("PI_LOOP_ERROR", {
       errorMessage,
       errorName: err instanceof Error ? err.name : typeof err,
       errorStack: err instanceof Error ? err.stack : undefined,
@@ -607,7 +692,7 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, model, abort, 
       resultSubtype === "end_turn" ||
       resultSubtype === undefined);
 
-  debugLog("SDK_SESSION_RESULT", {
+  debugLog("PI_SESSION_RESULT", {
     ok,
     errorMessage,
     resultSubtype,
@@ -679,7 +764,7 @@ async function main() {
   const featureTitleArg = args["feature-title"] ?? "feature";
   const promptFile = args["prompt-file"] ?? "";
   const projectDir = args["project-dir"] ?? process.cwd();
-  const baseUrl = args["base-url"] ?? process.env.ANTHROPIC_BASE_URL ?? "";
+  const baseUrl = args["base-url"] ?? "";
   const provider = args["provider"] ?? "lm_studio";
   const model = args["model"] ?? "";
 
@@ -705,13 +790,13 @@ async function main() {
   });
 
   emitLog(
-    `Starting Claude Agent SDK session for feature #${featureId}: "${feature.title}"`,
+    `Starting Pi AgentSession for feature #${featureId}: "${feature.title}"`,
     "info",
   );
   if (!baseUrl) {
     debugLog("ABORT_NO_BASE_URL");
     emitLog(
-      "No ANTHROPIC_BASE_URL configured — the SDK cannot reach a local model. Aborting.",
+      "No local model base URL configured — Pi cannot reach the provider. Aborting.",
       "error",
     );
     emit({ type: "done", outcome: "failure", reason: "no base URL configured" });
@@ -743,11 +828,12 @@ async function main() {
 
   const codingStart = Date.now();
   try {
-    debugLog("PHASE_SDK_START");
+    debugLog("PHASE_PI_START");
     const result = await runCodingAgent({
       feature,
       projectDir,
       baseUrl,
+      provider,
       model,
       abort,
       coderPrompt,
@@ -755,7 +841,7 @@ async function main() {
     });
     const codingMs = Date.now() - codingStart;
 
-    debugLog("PHASE_SDK_COMPLETE", {
+    debugLog("PHASE_PI_COMPLETE", {
       codingMs,
       resultExists: !!result,
       ok: result?.ok,
@@ -765,7 +851,7 @@ async function main() {
     });
 
     if (!result || !result.ok) {
-      debugLog("OUTCOME_FAILURE_FROM_SDK", {
+      debugLog("OUTCOME_FAILURE_FROM_PI", {
         reason: result?.errorMessage ?? result?.resultSubtype,
       });
       emitLog(
@@ -782,7 +868,7 @@ async function main() {
         reason: result?.errorMessage ?? `result ${result?.resultSubtype ?? "unknown"}`,
       });
       doneEmitted = true;
-      debugLog("DONE_EMITTED", { outcome: "failure", phase: "sdk" });
+      debugLog("DONE_EMITTED", { outcome: "failure", phase: "pi" });
       process.stdout.write("", () => process.exit(1));
       return;
     }
@@ -799,6 +885,27 @@ async function main() {
     }
 
     // ── Playwright verification phase ──
+    // Opt-in. Driven by the LOCALFORGE_PLAYWRIGHT_ENABLED env var, which
+    // the orchestrator resolves from the global / per-project setting.
+    // When disabled, the coding agent's own success is treated as the
+    // outcome — we don't write a spec, run chromium, or capture a
+    // screenshot. This is the right default for small local models that
+    // struggle to drive a real browser meaningfully.
+    const playwrightEnabled = process.env.LOCALFORGE_PLAYWRIGHT_ENABLED === "true";
+    if (!playwrightEnabled) {
+      debugLog("PHASE_PLAYWRIGHT_SKIPPED", "disabled via LOCALFORGE_PLAYWRIGHT_ENABLED");
+      emitLog(
+        "Playwright verification disabled — skipping (toggle in settings to enable)",
+        "info",
+      );
+      debugLog("OUTCOME_SUCCESS_PLAYWRIGHT_DISABLED");
+      emit({ type: "done", outcome: "success" });
+      doneEmitted = true;
+      debugLog("DONE_EMITTED", { outcome: "success", phase: "playwright_disabled" });
+      process.stdout.write("", () => process.exit(0));
+      return;
+    }
+
     debugLog("PHASE_PLAYWRIGHT_START", { playwrightTimeoutMs: PLAYWRIGHT_TIMEOUT_MS });
 
     let specInfo = null;

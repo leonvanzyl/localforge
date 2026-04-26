@@ -6,7 +6,7 @@ import "server-only";
  * Each provider exposes the same tiny contract: a stable id, a default base
  * URL, a human-readable label, and a `listModels()` probe. The registry in
  * `./index.ts` turns a provider id into the concrete client. Everything else
- * in the app — settings validation, health endpoints, .claude/settings.json
+ * in the app — settings validation, health endpoints, .pi/models.json
  * generation, orchestrator argv — reads through this layer so adding a third
  * provider is "drop a new file and add it to the registry".
  */

@@ -20,7 +20,7 @@ import {
  *
  * POST action=start picks the highest-priority ready feature, transitions it
  * to in_progress, creates an agent_session row, and spawns a Node.js child
- * process running the Claude Agent SDK runner (scripts/agent-runner.mjs),
+ * process running the Pi AgentSession runner (scripts/agent-runner.mjs),
  * which drives a real inference session against the configured local model.
  *
  * POST action=start_all fills all available agent slots with ready features.

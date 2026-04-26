@@ -45,7 +45,7 @@ If the user asks you to modify code, explain that you're a project assistant and
     <backend>
       <runtime>Node.js (Next.js API routes)</runtime>
       <database>SQLite with Drizzle ORM</database>
-      <agent_sdk>Claude Agent SDK (configured to use LM Studio via ANTHROPIC_BASE_URL)</agent_sdk>
+      <agent_sdk>Pi coding-agent SDK (configured for local OpenAI-compatible LM Studio/Ollama endpoints)</agent_sdk>
       <process_management>Node.js child_process for spawning agent sessions</process_management>
     </backend>
     <communication>
@@ -59,14 +59,18 @@ If the user asks you to modify code, explain that you're a project assistant and
     <local_model_server>
       <supported>LM Studio only (MVP)</supported>
       <default_model>google/gemma-4-31b</default_model>
-      <connection>HTTP via ANTHROPIC_BASE_URL pointing to http://127.0.0.1:1234</connection>
+      <connection>HTTP via Pi openai-completions provider pointing to http://127.0.0.1:1234/v1</connection>
       <sdk_config>
-        Claude Agent SDK configured via .claude/settings.json:
+        Pi configured via .pi/models.json:
         {
-          "env": {
-            "ANTHROPIC_BASE_URL": "http://127.0.0.1:1234"
-          },
-          "model": "google/gemma-4-31b"
+          "providers": {
+            "lm_studio": {
+              "baseUrl": "http://127.0.0.1:1234/v1",
+              "api": "openai-completions",
+              "apiKey": "localforge",
+              "models": [{ "id": "google/gemma-4-31b" }]
+            }
+          }
         }
       </sdk_config>
     </local_model_server>
@@ -77,7 +81,7 @@ If the user asks you to modify code, explain that you're a project assistant and
       - Node.js 20+ installed
       - LM Studio installed and running locally with google/gemma-4-31b model loaded
       - LM Studio API server running on http://127.0.0.1:1234
-      - Claude Agent SDK / Claude Code CLI installed
+      - Pi coding-agent SDK installed via npm dependencies
       - Playwright installed (npx playwright install)
     </environment_setup>
   </prerequisites>
@@ -118,7 +122,7 @@ If the user asks you to modify code, explain that you're a project assistant and
     </infrastructure>
 
     <app_shell_and_layout>
-      - Sidebar navigation with project list (Claude Code desktop-style layout)
+      - Sidebar navigation with project list (desktop coding-agent-style layout)
       - Responsive/mobile-first design with hamburger menu on small screens
       - Dark mode support (default)
       - Light mode support
@@ -131,7 +135,7 @@ If the user asks you to modify code, explain that you're a project assistant and
     <project_management>
       - Create new project with name input
       - Project folder creation on disk in working directory
-      - Project-specific .claude/settings.json generation with LM Studio config
+      - Project-specific .pi/models.json generation with local model config
       - Delete project with confirmation dialog
       - Option to remove project files from disk on deletion
       - Project-specific settings (model, LM Studio URL override)

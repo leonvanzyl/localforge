@@ -59,8 +59,8 @@ import {
  * Responsibilities (features #63, #67, #68):
  *   1. Pick the highest-priority ready backlog feature for a project and
  *      transition it to `in_progress`.
- *   2. Spawn a Claude Agent SDK runner as a detached Node.js child process
- *      (scripts/agent-runner.mjs) wired to the project's LM Studio config.
+ *   2. Spawn a Pi AgentSession runner as a detached Node.js child process
+ *      (scripts/agent-runner.mjs) wired to the project's local-model config.
  *   3. Parse the runner's JSON-lines stdout into agent_log rows and broadcast
  *      them to any live SSE subscribers (Feature #71 uses this via
  *      `subscribe(sessionId, listener)`).
@@ -473,6 +473,10 @@ function spawnAgentRunner(args: {
   const effectiveSettings = getProjectEffectiveSettings(args.session.projectId);
   const coderPrompt = effectiveSettings.coder_prompt || "";
   const devServerPort = effectiveSettings.dev_server_port || "3000";
+  // Resolved per-project; the runner reads this env var to decide whether
+  // to skip the Playwright verification phase entirely. Default is "false".
+  const playwrightEnabled =
+    effectiveSettings.playwright_enabled === "true" ? "true" : "false";
 
   // Write the feature context to a temp JSON file so the runner can read
   // long descriptions and acceptance criteria without argv escaping pain.
@@ -529,17 +533,18 @@ function spawnAgentRunner(args: {
     promptFile,
     nodeExec: process.execPath,
     sessionTimeoutMs: SESSION_TIMEOUT_MS,
+    playwrightEnabled,
   });
 
   const child = spawn(process.execPath, argv, {
     cwd: args.projectDir,
     env: {
       ...process.env,
-      ANTHROPIC_BASE_URL: baseUrl,
       LOCALFORGE_SESSION_ID: String(args.session.id),
       LOCALFORGE_FEATURE_ID: String(args.feature.id),
       LOCALFORGE_DEV_SERVER_PORT: devServerPort,
       LOCALFORGE_PLAYWRIGHT_BASE_URL: `http://localhost:${devServerPort}`,
+      LOCALFORGE_PLAYWRIGHT_ENABLED: playwrightEnabled,
     },
     stdio: "pipe",
   });

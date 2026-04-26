@@ -166,7 +166,15 @@ export function AddFeatureDialog({
       labelledBy="add-feature-title"
     >
       <DialogCloseButton onClick={() => onOpenChange(false)} />
-      <form onSubmit={handleSubmit} data-testid="add-feature-form" noValidate>
+      <form
+        onSubmit={handleSubmit}
+        data-testid="add-feature-form"
+        noValidate
+        // `contents` keeps the form layout-transparent so DialogBody/Footer
+        // become direct flex children of the dialog panel and the panel's
+        // viewport-height cap can engage the body's overflow-y-auto.
+        className="contents"
+      >
         <DialogHeader>
           <DialogTitle id="add-feature-title">Add feature</DialogTitle>
           <DialogDescription>

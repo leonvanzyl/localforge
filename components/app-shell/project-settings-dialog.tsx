@@ -56,6 +56,7 @@ type ProjectSettingsResponse = {
     coder_prompt: string | null;
     dev_server_port: string | null;
     max_concurrent_agents: string | null;
+    playwright_enabled: string | null;
   };
   effective: {
     provider: string;
@@ -65,6 +66,7 @@ type ProjectSettingsResponse = {
     coder_prompt: string;
     dev_server_port: string;
     max_concurrent_agents: string;
+    playwright_enabled: string;
   };
   defaults: {
     provider: string;
@@ -74,8 +76,13 @@ type ProjectSettingsResponse = {
     coder_prompt: string;
     dev_server_port: string;
     max_concurrent_agents: string;
+    playwright_enabled: string;
   };
 };
+
+function describePlaywrightEnabled(raw: string): string {
+  return raw === "true" ? "Enabled" : "Disabled";
+}
 
 type ModelsProbe =
   | { status: "idle" }
@@ -106,6 +113,7 @@ export function ProjectSettingsDialog({
   const [coderPrompt, setCoderPrompt] = React.useState("");
   const [devServerPort, setDevServerPort] = React.useState("");
   const [maxConcurrentAgents, setMaxConcurrentAgents] = React.useState("");
+  const [playwrightEnabled, setPlaywrightEnabled] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -139,6 +147,7 @@ export function ProjectSettingsDialog({
         setCoderPrompt(complete.overrides.coder_prompt ?? "");
         setDevServerPort(complete.overrides.dev_server_port ?? "");
         setMaxConcurrentAgents(complete.overrides.max_concurrent_agents ?? "");
+        setPlaywrightEnabled(complete.overrides.playwright_enabled ?? "");
       } catch (err) {
         if (cancelled) return;
         setError(
@@ -226,6 +235,7 @@ export function ProjectSettingsDialog({
           coder_prompt: coderPrompt,
           dev_server_port: devServerPort,
           max_concurrent_agents: maxConcurrentAgents,
+          playwright_enabled: playwrightEnabled,
         }),
       });
       const payload = (await res.json()) as Partial<ProjectSettingsResponse> & {
@@ -285,7 +295,15 @@ export function ProjectSettingsDialog({
           Leave a field blank to use the global default.
         </DialogDescription>
       </DialogHeader>
-      <form onSubmit={handleSubmit} data-testid="project-settings-form">
+      <form
+        onSubmit={handleSubmit}
+        data-testid="project-settings-form"
+        // `contents` makes the form layout-transparent so DialogBody and
+        // DialogFooter become direct flex children of the dialog panel —
+        // this is what lets the body's overflow-y-auto actually engage
+        // and keeps the footer pinned at the bottom of the viewport-cap.
+        className="contents"
+      >
         <DialogBody className="space-y-4">
           {loading && (
             <p
@@ -422,6 +440,38 @@ export function ProjectSettingsDialog({
                     : `Using the global default (${data.defaults.max_concurrent_agents}). Lower this on modest hardware — 3 local models in parallel can overload a small GPU.`}
                 </p>
               </div>
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="project-playwright-enabled"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Playwright verification
+                </label>
+                <select
+                  id="project-playwright-enabled"
+                  name="project-playwright-enabled"
+                  data-testid="project-settings-playwright-enabled-select"
+                  value={playwrightEnabled}
+                  onChange={(e) => setPlaywrightEnabled(e.target.value)}
+                  disabled={submitting}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <option value="">
+                    Use global default ({describePlaywrightEnabled(
+                      data.defaults.playwright_enabled,
+                    )})
+                  </option>
+                  <option value="false">Disabled</option>
+                  <option value="true">Enabled</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {data.overrides.playwright_enabled
+                    ? "Project override is set. Choose 'Use global default' to clear."
+                    : `Using the global default (${describePlaywrightEnabled(
+                        data.defaults.playwright_enabled,
+                      )}). When enabled, every completed feature is verified by launching Chromium against the dev server. Many small local models can't drive a browser reliably — leaving it off treats the coding agent's own success as the outcome.`}
+                </p>
+              </div>
               <div
                 data-testid="project-settings-effective"
                 className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"
@@ -455,6 +505,12 @@ export function ProjectSettingsDialog({
                 </p>
                 <p>
                   Model: <span>{data.effective.model}</span>
+                </p>
+                <p>
+                  Playwright verification:{" "}
+                  <span>
+                    {describePlaywrightEnabled(data.effective.playwright_enabled)}
+                  </span>
                 </p>
               </div>
             </>

@@ -9,7 +9,7 @@ import "server-only";
  * the typing-in-real-time feel they expect from a chat UI.
  *
  * This module only knows how to talk to LM Studio. It does not touch the
- * database, Next.js, or the Claude Agent SDK. The SSE bridge that pushes
+ * database, Next.js, or the Pi agent runtime. The SSE bridge that pushes
  * deltas to the browser lives in `app/api/agent-sessions/[id]/messages`.
  */
 

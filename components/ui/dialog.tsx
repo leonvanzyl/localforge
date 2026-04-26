@@ -70,8 +70,14 @@ export function Dialog({
         aria-label={ariaLabel}
         aria-labelledby={labelledBy}
         data-testid="dialog"
+        // Cap the panel at viewport-minus-padding and lay the children out
+        // as a flex column so the header / footer stay pinned and the
+        // (overflow-y-auto) DialogBody becomes the only scroll surface.
+        // Without this, tall dialog content grows past the viewport and
+        // the user can't reach it: the page itself is scroll-locked while
+        // any dialog is open (see body-overflow effect above).
         className={cn(
-          "relative z-10 w-full max-w-md rounded-lg border border-border bg-card text-card-foreground shadow-xl",
+          "relative z-10 flex w-full max-w-md max-h-[calc(100vh-2rem)] flex-col overflow-hidden rounded-lg border border-border bg-card text-card-foreground shadow-xl",
         )}
       >
         {children}
@@ -123,7 +129,16 @@ export function DialogBody({
   className,
   ...props
 }: React.HTMLAttributes<HTMLDivElement>) {
-  return <div className={cn("px-6 py-5", className)} {...props} />;
+  // `flex-1 min-h-0` lets the body shrink inside the flex column so
+  // `overflow-y-auto` actually engages; without `min-h-0` the body would
+  // refuse to be smaller than its content, defeating the scroll cap on
+  // the parent dialog panel.
+  return (
+    <div
+      className={cn("flex-1 min-h-0 overflow-y-auto px-6 py-5", className)}
+      {...props}
+    />
+  );
 }
 
 export function DialogFooter({

@@ -1,5 +1,5 @@
 // E2E verification for Feature #102: force-stop orchestrator terminates the
-// spawned Claude Agent SDK child process and flips the session row to
+// spawned Pi agent child process and flips the session row to
 // status='terminated' with ended_at set.
 //
 // Strategy:

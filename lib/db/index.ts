@@ -27,12 +27,9 @@ const sqlite = new Database(DB_PATH);
 sqlite.pragma("journal_mode = WAL");
 sqlite.pragma("foreign_keys = ON");
 
-// Enable Drizzle SQL query logging in development (or whenever the
-// LOCALFORGE_LOG_SQL env var is truthy). This proves API endpoints are
-// hitting the real SQLite database and is required by the
-// "Backend API queries real database" infrastructure feature.
+// Keep normal dev output quiet. SQL logging is still available when debugging
+// database behavior by setting LOCALFORGE_LOG_SQL=1 (or true).
 const shouldLogSql =
-  process.env.NODE_ENV !== "production" ||
   process.env.LOCALFORGE_LOG_SQL === "1" ||
   process.env.LOCALFORGE_LOG_SQL === "true";
 
@@ -40,8 +37,12 @@ export const db = drizzle(sqlite, { schema, logger: shouldLogSql });
 
 migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
 
-// Log a connection message so Feature 0 / 4 can detect DB activity in stdout.
-if (process.env.NODE_ENV !== "test") {
+// Opt-in connection logging for DB diagnostics. In dev/build, this module can
+// be imported by many workers, so logging by default is noisy.
+if (
+  process.env.LOCALFORGE_LOG_DB_CONNECT === "1" ||
+  process.env.LOCALFORGE_LOG_DB_CONNECT === "true"
+) {
   // eslint-disable-next-line no-console
   console.log(`[localforge] SQLite connected: ${DB_PATH}`);
 }

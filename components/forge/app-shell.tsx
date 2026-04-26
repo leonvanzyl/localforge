@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { useRouter } from "next/navigation";
 import { useTheme } from "@/components/theme/theme-provider";
 import { useShell } from "@/components/app-shell/shell-context";
 import { TopBar } from "@/components/forge/top-bar";
@@ -23,10 +24,17 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [events, setEvents] = React.useState<ActivityEvent[]>([]);
+  const router = useRouter();
 
   const { toggleTheme } = useTheme();
   const { openNewProjectDialog } = useShell();
   const { activeProject, isRunning, requestRefresh } = useActiveProject();
+
+  const getActiveProjectId = React.useCallback(() => {
+    if (activeProject) return activeProject.id;
+    const match = window.location.pathname.match(/^\/projects\/(\d+)(?:\/|$)/);
+    return match ? Number.parseInt(match[1], 10) : null;
+  }, [activeProject]);
 
   // SSE subscription for activity events
   React.useEffect(() => {
@@ -161,30 +169,38 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
   // nudge the UI feels unresponsive after "run queue" and users may
   // double-click, racing another start_all against the first.
   const handleStartAll = React.useCallback(() => {
-    if (!activeProject) return;
-    fetch(`/api/projects/${activeProject.id}/orchestrator`, {
+    const projectId = getActiveProjectId();
+    if (!projectId) return;
+    fetch(`/api/projects/${projectId}/orchestrator`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "start_all" }),
     })
-      .then(() => requestRefresh())
+      .then(() => {
+        requestRefresh();
+        router.refresh();
+      })
       .catch(() => {
         /* ignore */
       });
-  }, [activeProject, requestRefresh]);
+  }, [getActiveProjectId, requestRefresh, router]);
 
   const handlePauseAll = React.useCallback(() => {
-    if (!activeProject) return;
-    fetch(`/api/projects/${activeProject.id}/orchestrator`, {
+    const projectId = getActiveProjectId();
+    if (!projectId) return;
+    fetch(`/api/projects/${projectId}/orchestrator`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "stop_all" }),
     })
-      .then(() => requestRefresh())
+      .then(() => {
+        requestRefresh();
+        router.refresh();
+      })
       .catch(() => {
         /* ignore */
       });
-  }, [activeProject, requestRefresh]);
+  }, [getActiveProjectId, requestRefresh, router]);
 
   return (
     <div

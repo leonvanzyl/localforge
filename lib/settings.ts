@@ -30,6 +30,7 @@ export const GLOBAL_SETTING_KEYS = [
   "coder_prompt",
   "dev_server_port",
   "max_concurrent_agents",
+  "playwright_enabled",
 ] as const;
 
 /**
@@ -45,6 +46,7 @@ export const PROJECT_SETTING_KEYS = [
   "coder_prompt",
   "dev_server_port",
   "max_concurrent_agents",
+  "playwright_enabled",
 ] as const;
 
 export type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
@@ -59,6 +61,11 @@ export const DEFAULT_GLOBAL_SETTINGS: Record<GlobalSettingKey, string> = {
   coder_prompt: "",
   dev_server_port: "3000",
   max_concurrent_agents: "1",
+  // Playwright verification is opt-in. Many small local models struggle to
+  // drive a real browser well enough to take meaningful screenshots, so the
+  // default is off — the coding agent's own success signal is treated as
+  // sufficient unless the user explicitly enables verification.
+  playwright_enabled: "false",
 };
 
 export const MAX_CONCURRENT_AGENTS_HARD_CAP = 3;
@@ -69,6 +76,22 @@ function validateMaxConcurrentAgents(raw: string): string | null {
     return `Max concurrent agents must be 1, 2, or ${MAX_CONCURRENT_AGENTS_HARD_CAP}`;
   }
   return null;
+}
+
+function validatePlaywrightEnabled(raw: string): string | null {
+  if (raw !== "true" && raw !== "false") {
+    return "Playwright enabled must be 'true' or 'false'";
+  }
+  return null;
+}
+
+/**
+ * Cast the raw playwright_enabled string ("true"/"false") into a boolean.
+ * Anything other than the literal string "true" is treated as disabled,
+ * matching the default-off policy.
+ */
+export function isPlaywrightEnabled(raw: string | null | undefined): boolean {
+  return raw === "true";
 }
 
 function readGlobal(key: GlobalSettingKey): string | null {
@@ -143,6 +166,10 @@ function validate(input: UpdateGlobalSettingsInput): string | null {
   }
   if (input.max_concurrent_agents !== undefined) {
     const err = validateMaxConcurrentAgents(input.max_concurrent_agents);
+    if (err) return err;
+  }
+  if (input.playwright_enabled !== undefined) {
+    const err = validatePlaywrightEnabled(input.playwright_enabled);
     if (err) return err;
   }
   return null;
@@ -226,7 +253,7 @@ export function getProjectOverrides(projectId: number): ProjectOverridesShape {
 
 /**
  * Effective settings for a given project: project override when set, global
- * value otherwise. Downstream code (e.g. project folder .claude/settings.json
+ * value otherwise. Downstream code (e.g. project folder .pi/models.json
  * generation) reads through this so it always picks the most-specific value
  * without needing to know about the override layer.
  */
@@ -272,6 +299,10 @@ function validateProjectInput(input: UpdateProjectSettingsInput): string | null 
     const err = validateMaxConcurrentAgents(input.max_concurrent_agents);
     if (err) return err;
   }
+  if (input.playwright_enabled) {
+    const err = validatePlaywrightEnabled(input.playwright_enabled);
+    if (err) return err;
+  }
   // model accepts any non-empty string, or empty/null to clear.
   return null;
 }
@@ -313,8 +344,8 @@ export function baseUrlKeyForProvider(
  * specific project (when a projectId is passed, project overrides take
  * precedence over globals via {@link getProjectEffectiveSettings}).
  *
- * Consumed by the orchestrator and by the on-disk `.claude/settings.json`
- * writer so those two stay provider-aware without each having to know the
+ * Consumed by the orchestrator and by the on-disk `.pi/models.json` writer
+ * so those two stay provider-aware without each having to know the
  * shape of the settings table.
  */
 export function getEffectiveProviderConfig(
