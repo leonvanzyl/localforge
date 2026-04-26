@@ -418,7 +418,7 @@ export function BootstrapperPanel({
         onSubmit={handleSend}
         data-testid="bootstrapper-form"
         aria-disabled={isReadOnly}
-        className="flex items-end gap-2 border-t border-border px-6 py-4"
+        className="flex items-end gap-2 border-t border-border py-4 pl-6 pr-24"
       >
         <textarea
           data-testid="bootstrapper-input"
