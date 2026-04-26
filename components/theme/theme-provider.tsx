@@ -18,7 +18,7 @@ import * as React from "react";
 
 export const THEME_STORAGE_KEY = "localforge-theme";
 export type Theme = "dark" | "light";
-export const DEFAULT_THEME: Theme = "dark";
+export const DEFAULT_THEME: Theme = "light";
 
 /**
  * Inline script injected into <head> in app/layout.tsx. Reads the saved

@@ -1,7 +1,7 @@
 (() => {
   try {
     var saved = localStorage.getItem("localforge-theme");
-    var theme = saved === "light" || saved === "dark" ? saved : "dark";
+    var theme = saved === "light" || saved === "dark" ? saved : "light";
     var el = document.documentElement;
     if (theme === "dark") {
       el.classList.add("dark");

@@ -243,6 +243,7 @@ export function ProjectView({ project }: ProjectViewProps) {
     if (refreshTick === 0) return;
     fetchSlots();
     fetchFeatureCounts();
+    window.dispatchEvent(new CustomEvent("kanban:refresh"));
   }, [refreshTick, fetchSlots, fetchFeatureCounts]);
 
   // SSE for real-time log updates
@@ -294,6 +295,7 @@ export function ProjectView({ project }: ProjectViewProps) {
         // Refresh on status changes
         fetchSlots();
         fetchFeatureCounts();
+        window.dispatchEvent(new CustomEvent("kanban:refresh"));
       });
 
       es.onerror = () => {

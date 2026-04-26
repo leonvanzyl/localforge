@@ -1,69 +1,83 @@
 # LocalForge
 
-> Long-running autonomous coding harness powered by **local** LLMs.
+> Build apps on autopilot with local AI models. No cloud, no API keys, no per-token billing.
 
-LocalForge lets you describe an app in plain language and watch AI coding agents
-build it on your own hardware - no cloud, no API keys, no per-token billing.
-Point it at a model running in [LM Studio](https://lmstudio.ai/), click Start,
-and the orchestrator breaks your idea into features, tracks them on a kanban
-board, and deploys agents to implement and test them one at a time.
+## Quick Start
+
+### 1. Prerequisites
+
+- **Node.js 20+** — [download here](https://nodejs.org/)
+- **LM Studio** — [download here](https://lmstudio.ai/)
+
+### 2. Set up LM Studio
+
+1. Open LM Studio and download a model (e.g. `google/gemma-4-31b`)
+2. Load the model and start the local API server (default: `http://127.0.0.1:1234`)
+
+### 3. Install and run LocalForge
+
+```bash
+git clone https://github.com/leonvanzyl/localforge.git
+cd localforge
+npm install
+npm run db:migrate
+npm run dev
+```
+
+Open **http://localhost:7777** in your browser.
+
+### 4. Build something
+
+1. Create a new project from the sidebar
+2. Describe your app — the AI bootstrapper generates features automatically
+3. Click **Start** and watch agents build it feature by feature
 
 ---
 
-## Status
+## What is LocalForge?
 
-Scaffolding complete. 86 features defined in the tracker and waiting to be
-implemented by the coding agents. See progress on the kanban board once the
-app boots.
+LocalForge lets you describe an app in plain language and watch AI coding agents
+build it on your own hardware. Point it at a model running in LM Studio, click
+Start, and the orchestrator breaks your idea into features, tracks them on a
+kanban board, and deploys agents to implement and test them one at a time.
 
-## Prerequisites
+## How the orchestrator works
 
-| Tool | Version | Notes |
-| --- | --- | --- |
-| Node.js | **20 or newer** | `node --version` |
-| npm | ships with Node | |
-| LM Studio | latest | Load `google/gemma-4-31b` and enable the API server on `http://127.0.0.1:1234` |
-| Pi coding-agent SDK | bundled npm dependency | the coding agents use Pi with the configured local OpenAI-compatible provider |
-| Playwright browsers | | `npx playwright install` (run once) |
+1. You create a project, either manually or by chatting with the AI bootstrapper.
+2. Features land in the **Backlog** column of the kanban, ordered by priority
+   and respecting dependencies.
+3. Click **Start** — LocalForge spawns an agent session pointed at the configured
+   local model, passes the highest-priority ready feature, and moves the card to
+   **In Progress**.
+4. The agent writes code, runs Playwright tests, and captures screenshots. Live
+   output streams into the activity panel via SSE.
+5. On success the card moves to **Completed**. On failure the feature returns to
+   the backlog with demoted priority so other features can go first.
+6. When all features pass, confetti.
 
-## Getting started
-
-```bash
-# 1. Clone / cd into the project
-cd localforge
-
-# 2. First-time setup + launch (installs deps, runs migrations, starts dev server)
-./init.sh
-```
-
-Open <http://localhost:7777> and follow the in-app flow to create your first
-project.
-
-### Useful scripts
+## Scripts
 
 | Command | What it does |
 | --- | --- |
-| `./init.sh` | install + migrate + start dev server (default) |
-| `./init.sh --background` | start dev server in background, log to `dev-server.log` |
-| `./init.sh --build` | build + start production server |
-| `npm run dev` | just the Next.js dev server |
-| `npm run db:generate` | generate a new Drizzle migration from schema changes |
-| `npm run db:migrate` | apply pending migrations |
-| `npm test` | run Playwright tests |
+| `npm run dev` | Start the dev server on port 7777 |
+| `npm run build` | Production build |
+| `npm start` | Start production server |
+| `npm run db:generate` | Generate a Drizzle migration from schema changes |
+| `npm run db:migrate` | Apply pending migrations |
+| `npm test` | Run Playwright tests |
 
 ## Tech stack
 
 - **Frontend:** Next.js 16 (App Router) + React 19, Tailwind CSS + shadcn/ui, dnd-kit, Sonner
 - **Backend:** Next.js API routes (Node.js), SQLite + Drizzle ORM, Server-Sent Events
-- **Agents:** Pi coding-agent SDK, configured for LM Studio/Ollama through OpenAI-compatible local endpoints
-- **Testing:** Playwright (`npx playwright test`)
+- **Agents:** Pi coding-agent SDK, configured for LM Studio/Ollama via OpenAI-compatible endpoints
+- **Testing:** Playwright
 
 ## Project layout
 
 ```
 app/                 Next.js App Router routes + API handlers
   api/               REST API endpoints
-  globals.css        Tailwind entry + CSS variables for themes
 components/          React components
   ui/                shadcn/ui primitives
 lib/
@@ -71,46 +85,15 @@ lib/
   agent/             Pi agent integration + orchestrator
 data/                SQLite database file (git-ignored)
 projects/            User-created project folders (git-ignored)
-screenshots/         Playwright captures (git-ignored)
 drizzle/             Generated migrations
-tests/               Playwright .spec.ts files
+tests/               Playwright specs
 ```
-
-## How the orchestrator works
-
-1. You create a project, either manually or by chatting with the AI bootstrapper.
-2. Features land in the **Backlog** column of the kanban, ordered by priority
-   and respecting dependencies.
-3. Click **Start Orchestrator** - LocalForge spawns a Pi AgentSession pointed
-   at the configured local model, passes the highest-priority ready feature, and
-   moves the card to **In Progress**.
-4. The agent writes code, runs Playwright tests, and captures screenshots.
-   Live output streams into the activity panel via SSE.
-5. On success the card moves to **Completed**. On failure the feature returns
-   to the backlog with demoted priority so other features can go first.
-6. When all features pass, confetti. A summary modal shows what was built.
 
 ## Configuration
 
-Per-project Pi model metadata is stored in `.pi/models.json` inside each project
-folder, e.g.:
-
-```json
-{
-  "providers": {
-    "lm_studio": {
-      "baseUrl": "http://127.0.0.1:1234/v1",
-      "api": "openai-completions",
-      "apiKey": "localforge",
-      "models": [{ "id": "google/gemma-4-31b" }]
-    }
-  }
-}
-```
-
-Override per project via the project settings page, or globally via
-**Settings** in the sidebar.
+Per-project model config is stored in `.pi/models.json` inside each project folder.
+Override per project via project settings, or globally via **Settings** in the sidebar.
 
 ## License
 
-MIT (or whatever the repo owner chooses - placeholder).
+Apache License 2.0 — see [LICENSE](LICENSE) for details.
