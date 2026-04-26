@@ -13,7 +13,14 @@ import {
 
 const COLLAPSED_STORAGE_KEY = "localforge.sidebar.collapsed";
 
-export function ForgeSidebar() {
+type ForgeSidebarProps = {
+  /** Mobile drawer open state. Ignored on desktop. */
+  mobileOpen?: boolean;
+  /** Called to close the mobile drawer (e.g. after navigation). */
+  onMobileClose?: () => void;
+};
+
+export function ForgeSidebar({ mobileOpen = false, onMobileClose }: ForgeSidebarProps) {
   const { projects, openNewProjectDialog } = useShell();
   const pathname = usePathname();
 
@@ -48,10 +55,17 @@ export function ForgeSidebar() {
 
   const projectList = projects ?? [];
 
+  // Tapping a workspace closes the mobile drawer so users see the board.
+  // No-op on desktop where the prop is ignored.
+  const handleWorkspaceClick = React.useCallback(() => {
+    onMobileClose?.();
+  }, [onMobileClose]);
+
   return (
     <aside
       className="lf-sidebar"
       data-collapsed={collapsed ? "true" : "false"}
+      data-mobile-open={mobileOpen ? "true" : "false"}
     >
       {/* Header */}
       <div className="side-head">
@@ -65,6 +79,17 @@ export function ForgeSidebar() {
           aria-expanded={!collapsed}
           title={collapsed ? "Expand sidebar" : "Collapse sidebar"}
           data-testid="sidebar-collapse-toggle"
+        >
+          <PanelLeftIcon size={16} />
+        </button>
+        {/* Close button for the mobile drawer (hidden on desktop via CSS). */}
+        <button
+          type="button"
+          className="btn icon-btn ghost side-mobile-close"
+          onClick={onMobileClose}
+          aria-label="Close navigation"
+          title="Close navigation"
+          data-testid="sidebar-mobile-close"
         >
           <PanelLeftIcon size={16} />
         </button>
@@ -85,6 +110,7 @@ export function ForgeSidebar() {
               href={`/projects/${p.id}`}
               style={{ textDecoration: "none", color: "inherit" }}
               title={p.name}
+              onClick={handleWorkspaceClick}
             >
               <div className={"ws-item " + (isActive ? "active" : "")}>
                 <div className="ws-row">

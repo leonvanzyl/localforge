@@ -23,8 +23,33 @@ import {
 function ForgeShellInner({ children }: { children: React.ReactNode }) {
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
+  const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   const [events, setEvents] = React.useState<ActivityEvent[]>([]);
   const router = useRouter();
+
+  // Close the mobile drawer whenever the viewport grows past the
+  // tablet breakpoint so the desktop sidebar isn't stuck in the
+  // "open" state (which uses `position: fixed` only on small screens).
+  React.useEffect(() => {
+    const mq = window.matchMedia("(min-width: 768px)");
+    const handler = (e: MediaQueryListEvent | MediaQueryList) => {
+      if (e.matches) setMobileMenuOpen(false);
+    };
+    handler(mq);
+    mq.addEventListener("change", handler);
+    return () => mq.removeEventListener("change", handler);
+  }, []);
+
+  // Lock body scroll while the mobile drawer is visible so the
+  // page underneath doesn't scroll behind it.
+  React.useEffect(() => {
+    if (!mobileMenuOpen) return;
+    const original = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    return () => {
+      document.body.style.overflow = original;
+    };
+  }, [mobileMenuOpen]);
 
   const { toggleTheme } = useTheme();
   const { openNewProjectDialog } = useShell();
@@ -127,6 +152,7 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
       if (e.key === "Escape") {
         setShortcutsOpen(false);
         setDrawerOpen(false);
+        setMobileMenuOpen(false);
         return;
       }
 
@@ -219,11 +245,23 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
         onPauseAll={handlePauseAll}
         onToggleDrawer={() => setDrawerOpen((v) => !v)}
         onToggleShortcuts={() => setShortcutsOpen((v) => !v)}
+        onToggleMobileMenu={() => setMobileMenuOpen((v) => !v)}
         drawerOpen={drawerOpen}
       />
 
       <div className="lf-main">
-        <ForgeSidebar />
+        <ForgeSidebar
+          mobileOpen={mobileMenuOpen}
+          onMobileClose={() => setMobileMenuOpen(false)}
+        />
+        {/* Backdrop behind the mobile sidebar drawer. Click anywhere on
+            it to dismiss. CSS hides it on desktop. */}
+        <div
+          className={"lf-mobile-backdrop" + (mobileMenuOpen ? " open" : "")}
+          onClick={() => setMobileMenuOpen(false)}
+          aria-hidden="true"
+          data-testid="mobile-menu-backdrop"
+        />
         <main className="lf-content">{children}</main>
         <ActivityDrawer
           open={drawerOpen}

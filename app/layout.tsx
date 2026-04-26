@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import "./globals.css";
 import { AppShell } from "@/components/app-shell/app-shell";
 import {
@@ -10,6 +10,16 @@ export const metadata: Metadata = {
   title: "LocalForge",
   description:
     "Autonomous coding harness powered by local LLMs via LM Studio. Describe your app and watch agents build it on your own hardware.",
+};
+
+// Without an explicit viewport the browser defaults to a desktop-width
+// viewport, so the responsive media queries in globals.css would never
+// engage on a phone. width=device-width tells mobile browsers to size
+// the layout to the screen's actual CSS pixel width.
+export const viewport: Viewport = {
+  width: "device-width",
+  initialScale: 1,
+  viewportFit: "cover",
 };
 
 export default function RootLayout({

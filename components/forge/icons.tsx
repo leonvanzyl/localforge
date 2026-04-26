@@ -315,3 +315,20 @@ export const PanelLeftIcon: React.FC<IconProps> = ({ size = 16, className, style
     <line x1="9" y1="4" x2="9" y2="20" />
   </svg>
 );
+
+export const MenuIcon: React.FC<IconProps> = ({ size = 16, className, style, ...props }) => (
+  <svg
+    xmlns="http://www.w3.org/2000/svg"
+    width={size}
+    height={size}
+    viewBox="0 0 24 24"
+    className={className}
+    style={style}
+    {...defaultStroke}
+    {...props}
+  >
+    <line x1="3" y1="6" x2="21" y2="6" />
+    <line x1="3" y1="12" x2="21" y2="12" />
+    <line x1="3" y1="18" x2="21" y2="18" />
+  </svg>
+);

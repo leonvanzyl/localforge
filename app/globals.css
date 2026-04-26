@@ -158,25 +158,28 @@
   background: var(--panel); border-bottom: 1px solid var(--line);
   position: relative; z-index: 5; height: 52px; flex-shrink: 0;
 }
-.brand { display: flex; align-items: baseline; gap: 2px; user-select: none; }
+.brand { display: flex; align-items: baseline; gap: 2px; user-select: none; flex-shrink: 0; white-space: nowrap; }
 .brand .mark {
   width: 26px; height: 26px; display: inline-flex; align-items: center; justify-content: center;
   background: var(--accent); color: var(--accent-fg); border-radius: 7px; margin-right: 10px;
   font-family: 'Fraunces', serif; font-weight: 700; font-size: 17px; line-height: 1;
   box-shadow: inset 0 -2px 0 rgba(0,0,0,0.25); transform: rotate(-3deg);
+  flex-shrink: 0;
 }
 .brand .name { font-family: 'Fraunces', serif; font-weight: 600; font-size: 21px; letter-spacing: -0.01em; }
-.brand .sub { font-family: 'Caveat', cursive; font-size: 16px; color: var(--ink-3); margin-left: 6px; }
+.brand .sub { font-family: 'Caveat', cursive; font-size: 16px; color: var(--ink-3); margin-left: 6px; white-space: nowrap; }
 
-.ws-crumb { display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 8px; border-radius: 8px; cursor: pointer; transition: background .15s; }
+.ws-crumb { display: flex; align-items: center; gap: 8px; padding: 4px 10px 4px 8px; border-radius: 8px; cursor: pointer; transition: background .15s; min-width: 0; }
 .ws-crumb:hover { background: var(--panel-2); }
-.ws-crumb .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px rgba(200,90,43,0.18); animation: pulse 2s ease-in-out infinite; }
+.ws-crumb .dot { width: 7px; height: 7px; border-radius: 50%; background: var(--accent); box-shadow: 0 0 0 3px rgba(200,90,43,0.18); animation: pulse 2s ease-in-out infinite; flex-shrink: 0; }
 [data-theme="dark"] .ws-crumb .dot { box-shadow: 0 0 0 3px rgba(224,122,74,0.2); }
 .ws-crumb.idle .dot { background: var(--ink-4); box-shadow: none; animation: none; }
-.ws-crumb .nm { font-family: 'Fraunces', serif; font-weight: 500; font-size: 16px; }
-.ws-crumb .pth { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-3); }
+.ws-crumb .nm { font-family: 'Fraunces', serif; font-weight: 500; font-size: 16px; white-space: nowrap; flex-shrink: 0; }
+.ws-crumb .pth { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
-.tb-actions { display: flex; align-items: center; gap: 8px; }
+.tb-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+.btn.tb-run-btn { white-space: nowrap; }
+.tb-run-label { white-space: nowrap; }
 
 /* ─── Buttons ─── */
 .btn {
@@ -198,6 +201,11 @@
 .btn.xs { padding: 2px 7px; font-size: 11px; border-radius: 6px; }
 .btn.icon-btn { padding: 6px; width: 30px; height: 30px; justify-content: center; }
 .btn[disabled] { opacity: 0.45; cursor: not-allowed; }
+
+/* Mobile-only menu button (hamburger). Hidden by default — the
+   responsive media-queries below promote it to inline-flex on small
+   viewports. Uses .btn double-class to outrank the .btn rule above. */
+.btn.tb-mobile-menu { display: none; }
 
 .kbd {
   display: inline-flex; align-items: center; justify-content: center;
@@ -260,6 +268,24 @@
 .side-foot { padding: 10px 12px; border-top: 1px solid var(--line); display: flex; align-items: center; gap: 8px; }
 .side-foot .spacer { flex: 1; }
 .side-head .side-toggle { margin-left: 4px; }
+
+/* Mobile-only close (X) button in the sidebar header — desktop hides it.
+   .btn double-class outranks the base .btn { display: inline-flex } rule. */
+.btn.side-mobile-close { display: none; margin-left: 4px; }
+
+/* Mobile drawer backdrop — only shows when the sidebar is in mobile-open
+   state. Hidden on desktop where the sidebar lives in the flex layout. */
+.lf-mobile-backdrop {
+  display: none;
+  position: fixed; inset: 0;
+  background: rgba(20, 15, 10, 0.45);
+  backdrop-filter: blur(2px);
+  z-index: 30;
+  opacity: 0; pointer-events: none;
+  transition: opacity .18s ease;
+}
+.lf-mobile-backdrop.open { opacity: 1; pointer-events: auto; }
+[data-theme="dark"] .lf-mobile-backdrop { background: rgba(0, 0, 0, 0.6); }
 
 /* Collapsed sidebar rules */
 .lf-sidebar[data-collapsed="true"] .side-head {
@@ -542,3 +568,157 @@
 @keyframes blink { 0%, 50% { opacity: 1; } 50.01%, 100% { opacity: 0; } }
 @keyframes slideUp { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
 .fade-in { animation: slideUp .25s ease-out both; }
+
+/* ─────────────────────────── Responsive ─────────────────────────── */
+
+/* ---- Tablet (≤ 1024px) ----
+   Below the desktop grid the kanban becomes a horizontal scroller so all
+   three columns remain swipeable instead of getting clipped. The agent
+   pods drop to two columns to keep their internal text legible. */
+@media (max-width: 1024px) {
+  /* Top bar — drop the decorative subtitle and trim the breadcrumb path so
+     the title and action buttons get to stay on a single row. */
+  .topbar { gap: 10px; padding: 10px 14px; }
+  .brand .sub { display: none; }
+  .ws-crumb {
+    flex: 1 1 auto; min-width: 0; overflow: hidden;
+  }
+  .ws-crumb .pth {
+    flex: 1 1 auto; min-width: 0;
+  }
+
+  .board {
+    grid-template-columns: repeat(3, minmax(280px, 1fr));
+    overflow-x: auto;
+    overflow-y: hidden;
+    scroll-snap-type: x mandatory;
+    -webkit-overflow-scrolling: touch;
+    padding-bottom: 6px;
+  }
+  .board > .col { scroll-snap-align: start; min-width: 280px; }
+  .board::-webkit-scrollbar { height: 8px; }
+  .board::-webkit-scrollbar-thumb { background: var(--line-2); border-radius: 4px; }
+
+  .pods { grid-template-columns: repeat(2, minmax(0, 1fr)) !important; }
+
+  .content-head { padding: 14px 18px 10px; }
+  .pods-section { padding: 14px 18px 8px; }
+  .board-section { padding: 14px 18px 18px; }
+}
+
+/* ---- Mobile (≤ 768px) ----
+   Sidebar moves off-canvas and is revealed by the new hamburger button
+   in the top bar. Top bar trims its decorative bits so the brand,
+   workspace name, and action buttons all fit on one row. */
+@media (max-width: 768px) {
+  /* Top bar — show hamburger, hide subtitle and breadcrumb path. */
+  .topbar { gap: 8px; padding: 8px 12px; height: 52px; }
+  .btn.tb-mobile-menu { display: inline-flex; }
+  .brand .sub { display: none; }
+  .brand .name { font-size: 18px; }
+  .brand .mark { margin-right: 8px; }
+  .tb-divider { display: none; }
+  .ws-crumb { padding: 4px 8px; min-width: 0; flex-shrink: 1; overflow: hidden; }
+  .ws-crumb .pth { display: none; }
+  .ws-crumb .nm {
+    font-size: 14px; max-width: 30vw;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .btn.tb-shortcuts-btn { display: none; }
+  .tb-actions { gap: 4px; }
+  .btn.tb-run-btn { padding: 6px 10px; width: 32px; height: 30px; justify-content: center; }
+  .tb-run-label { display: none; }
+
+  /* Sidebar becomes a slide-in drawer. */
+  .lf-sidebar {
+    position: fixed; left: 0; top: 0; bottom: 0;
+    z-index: 40; height: 100vh; width: 280px;
+    box-shadow: var(--shadow-lg);
+    transform: translateX(-100%);
+    transition: transform .22s cubic-bezier(.2,.7,.2,1);
+  }
+  .lf-sidebar[data-mobile-open="true"] { transform: translateX(0); }
+  /* Ignore the desktop "collapsed" mode while in the mobile drawer so the
+     drawer always renders as a full-width panel when opened on mobile. */
+  .lf-sidebar[data-collapsed="true"] {
+    width: 280px;
+  }
+  .lf-sidebar[data-collapsed="true"] .side-head { justify-content: space-between; padding: 14px 14px 8px; }
+  .lf-sidebar[data-collapsed="true"] .side-head .title,
+  .lf-sidebar[data-collapsed="true"] .side-head .count { display: inline; }
+  .lf-sidebar[data-collapsed="true"] .ws-list { padding: 4px 8px 8px; align-items: stretch; }
+  .lf-sidebar[data-collapsed="true"] .ws-list > a { width: auto; }
+  .lf-sidebar[data-collapsed="true"] .ws-item {
+    padding: 10px 10px; width: auto; align-items: stretch; justify-content: flex-start; gap: 4px;
+  }
+  .lf-sidebar[data-collapsed="true"] .ws-row { justify-content: flex-start; gap: 8px; }
+  .lf-sidebar[data-collapsed="true"] .ws-name,
+  .lf-sidebar[data-collapsed="true"] .ws-path,
+  .lf-sidebar[data-collapsed="true"] .ws-meta,
+  .lf-sidebar[data-collapsed="true"] .ws-progress { display: block; }
+  .lf-sidebar[data-collapsed="true"] .ws-meta { display: flex; }
+  .lf-sidebar[data-collapsed="true"] .new-ws { margin: 10px 12px 12px; padding: 12px; justify-content: flex-start; gap: 10px; }
+  .lf-sidebar[data-collapsed="true"] .new-ws .label { display: inline; }
+  .lf-sidebar[data-collapsed="true"] .side-foot { flex-direction: row; gap: 8px; padding: 10px 12px; }
+  .lf-sidebar[data-collapsed="true"] .side-foot .spacer { display: block; }
+
+  .btn.side-toggle { display: none; }
+  .btn.side-mobile-close { display: inline-flex; }
+  .lf-mobile-backdrop { display: block; }
+
+  /* Content area — kanban + pods become single column to avoid clipping. */
+  .lf-content { width: 100%; }
+
+  .content-head {
+    flex-direction: column; align-items: flex-start; gap: 12px;
+    padding: 14px 16px 12px;
+  }
+  .content-head .crumbs h1 { font-size: 22px; flex-wrap: wrap; }
+  .content-head .crumbs h1 .path { display: none; }
+  .head-stats { width: 100%; gap: 0; flex-wrap: wrap; }
+  .head-stats .stat {
+    flex: 1 1 0; align-items: flex-start; padding: 4px 12px 4px 0;
+    border-left: none; border-right: 1px solid var(--line); min-width: 60px;
+  }
+  .head-stats .stat:last-child { border-right: none; }
+  .head-stats .stat .v { font-size: 17px; }
+
+  /* Agent pods: single column, allow scroll-based content rather than
+     forcing all pods on one screen. */
+  .pods { grid-template-columns: 1fr !important; gap: 10px; }
+  .pod { min-height: 0; }
+  .pods-section { padding: 12px 16px 6px; }
+  .pods-head { flex-direction: column; align-items: flex-start; gap: 4px; margin-bottom: 8px; }
+  .pods-title { font-size: 17px; }
+
+  /* Kanban: keep horizontal swipe but each column fills nearly the whole
+     viewport so the user reads one column at a time. */
+  .board {
+    grid-template-columns: repeat(3, 90vw);
+    gap: 10px;
+  }
+  .board > .col { min-width: 90vw; }
+  .board-section { padding: 12px 16px 18px; min-height: 420px; }
+  .board-head { flex-direction: column; align-items: stretch; gap: 8px; }
+  .search-box { min-width: 0; width: 100%; }
+
+  /* Activity drawer takes over the screen on mobile. */
+  .drawer { width: 100%; }
+
+  /* Right-side floating notification cluster shouldn't sit over the
+     kanban scrollbar — pull it up a touch. */
+  .notification-cluster, .fixed.bottom-4.right-4 { bottom: 12px; right: 12px; }
+}
+
+/* ---- Small mobile (≤ 480px) ----
+   Some elements are still tight at 480px and below. */
+@media (max-width: 480px) {
+  .topbar { padding: 8px 10px; }
+  .brand .name { font-size: 16px; }
+  .brand .mark { width: 22px; height: 22px; font-size: 14px; margin-right: 6px; }
+  .ws-crumb .nm { max-width: 22vw; font-size: 13px; }
+
+  .head-stats .stat { padding: 4px 8px 4px 0; }
+  .head-stats .stat .v { font-size: 15px; }
+  .head-stats .stat .l { font-size: 9px; }
+}
