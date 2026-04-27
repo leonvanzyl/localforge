@@ -38,6 +38,7 @@ import {
 } from "./logs";
 import {
   findNextReadyFeatureForProject,
+  getInProgressFeaturesForProject,
   demoteFeatureToBacklog,
   getFeature,
   updateFeature,
@@ -292,6 +293,26 @@ export function startOrchestrator(projectId: number): StartResult {
       // Reap: close the orphaned row so it doesn't count against the limit.
       closeAgentSession(existing.id, "terminated");
     }
+  }
+
+  // Recover orphaned features stuck in "in_progress" with no running session.
+  // This happens when the dev server restarts mid-run: the session gets reaped
+  // above but the feature stays wedged. Reset them to backlog so they can be
+  // picked up again.
+  const runningFeatureIds = new Set(
+    [...getState().running.values()]
+      .filter((rs) => rs.session.projectId === projectId)
+      .map((rs) => rs.feature.id),
+  );
+  const orphanedFeatures = getInProgressFeaturesForProject(projectId).filter(
+    (f) => !runningFeatureIds.has(f.id),
+  );
+  for (const orphan of orphanedFeatures) {
+    debugLog("RECOVER_ORPHANED_FEATURE", {
+      featureId: orphan.id,
+      title: orphan.title,
+    });
+    updateFeature(orphan.id, { status: "backlog" });
   }
 
   // Check how many sessions are currently running for this project.

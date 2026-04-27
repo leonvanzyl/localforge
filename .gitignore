@@ -36,6 +36,9 @@ agent-runner-debug.log
 # Playwright MCP scratch output
 .playwright-mcp/
 
+# Monitor loop screenshots (Claude Code monitoring)
+.monitor-screenshots/
+
 # Ad-hoc responsive/visual verification screenshots dumped at the repo root
 /after-*.png
 

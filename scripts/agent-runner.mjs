@@ -318,7 +318,14 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
     };
   }
 
-  const baseUrl = process.env.LOCALFORGE_PLAYWRIGHT_BASE_URL || "http://localhost:7777";
+  // Use the project's dev server port, NOT the harness port (7777).
+  // The fallback uses LOCALFORGE_DEV_SERVER_PORT so we always target the
+  // app being built, never the LocalForge UI.
+  const devPort = process.env.LOCALFORGE_DEV_SERVER_PORT || "3000";
+  const baseUrl = process.env.LOCALFORGE_PLAYWRIGHT_BASE_URL || `http://localhost:${devPort}`;
+  debugLog("PLAYWRIGHT_TARGET_URL", { baseUrl, devPort });
+  emitLog(`Playwright navigating to ${baseUrl}`, "info");
+
   let browser = null;
   try {
     browser = await chromium.launch({ headless: true });
@@ -326,8 +333,10 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
     const page = await context.newPage();
     await page.goto(baseUrl, { timeout: 15000, waitUntil: "domcontentloaded" });
     const title = await page.title();
+    const url = page.url();
     await page.screenshot({ path: screenshotPath, fullPage: false });
     const passedTitleCheck = typeof title === "string" && title.length > 0;
+    debugLog("PLAYWRIGHT_PAGE_INFO", { title, url, passedTitleCheck });
     await context.close();
     return {
       ok: passedTitleCheck,
@@ -337,6 +346,7 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
       durationMs: Date.now() - started,
       error: passedTitleCheck ? null : `empty page title (${title})`,
       title,
+      url,
       featureId,
       featureTitle,
     };
@@ -414,8 +424,23 @@ if "Additional project-specific instructions" below seems to suggest one.`;
 function makeWorkspaceGuardExtension(projectDir, onDenied) {
   const root = path.resolve(projectDir);
 
+  const isWindows = process.platform === "win32";
+
+  /**
+   * Convert MSYS/Git-Bash style paths (/c/Users/...) to Windows paths
+   * (C:\Users\...) so workspace checks work on Windows. On Mac/Linux this
+   * is a no-op since /c/... is a legitimate Unix path, not an MSYS prefix.
+   */
+  function normaliseMsysPath(p) {
+    if (!isWindows) return p;
+    const msys = /^\/([a-zA-Z])(\/.*)?$/.exec(p);
+    if (msys) return `${msys[1].toUpperCase()}:${(msys[2] ?? "\\").replace(/\//g, "\\")}`;
+    return p;
+  }
+
   function isInsideRoot(candidate) {
-    const resolved = path.resolve(root, candidate);
+    const normalised = normaliseMsysPath(candidate);
+    const resolved = path.resolve(root, normalised);
     if (resolved === root) return true;
     const rel = path.relative(root, resolved);
     return rel !== "" && !rel.startsWith("..") && !path.isAbsolute(rel);
@@ -435,7 +460,7 @@ function makeWorkspaceGuardExtension(projectDir, onDenied) {
       const raw = input?.path;
       if (typeof raw !== "string" || raw.length === 0) return null;
       if (!isInsideRoot(raw)) {
-        const resolved = path.resolve(root, raw);
+        const resolved = path.resolve(root, normaliseMsysPath(raw));
         return `${toolName} to ${resolved} is outside the workspace ${root}. Use a path inside the workspace.`;
       }
       return null;
@@ -453,14 +478,24 @@ function makeWorkspaceGuardExtension(projectDir, onDenied) {
         // aren't filesystem targets the process acts on directly.
         if (/[*?]/.test(raw)) continue;
         if (/^(https?|ftp|file):\/\//i.test(raw)) continue;
+        // Skip very short matches (< 4 chars after /) — these are not real
+        // filesystem paths (e.g. /PID, //PID from pkill/ps output).
+        const pathPart = raw.replace(/^\/+/, "");
+        if (pathPart.length < 4 && !/^[a-zA-Z]:/.test(raw)) continue;
         // Common system paths that shell commands legitimately reference
         // (e.g. /dev/null for redirection, /tmp for scratch).
         if (
           raw === "/dev/null" ||
           raw === "/dev/stdout" ||
           raw === "/dev/stderr" ||
+          raw.startsWith("/dev/") ||
           raw.startsWith("/tmp/") ||
-          raw === "/tmp"
+          raw === "/tmp" ||
+          raw.startsWith("/usr/") ||
+          raw.startsWith("/bin/") ||
+          raw.startsWith("/etc/") ||
+          raw.startsWith("/proc/") ||
+          raw.startsWith("/sys/")
         ) {
           continue;
         }

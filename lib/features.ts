@@ -487,6 +487,18 @@ export function listProjectSiblings(featureId: number): FeatureRecord[] {
  * treats priority 0 as the top of the backlog, same as nextPriorityForProject
  * which appends with `max+1`.
  */
+export function getInProgressFeaturesForProject(
+  projectId: number,
+): FeatureRecord[] {
+  return db
+    .select()
+    .from(features)
+    .where(
+      and(eq(features.projectId, projectId), eq(features.status, "in_progress")),
+    )
+    .all();
+}
+
 export function findNextReadyFeatureForProject(
   projectId: number,
 ): FeatureRecord | null {
