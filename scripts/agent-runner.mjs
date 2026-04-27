@@ -404,6 +404,15 @@ Rules:
   in your final reply.
 - Do NOT invent files you have not read. Always Read before you Edit.
 
+CRITICAL — process management safety:
+- NEVER run "taskkill /F /IM node.exe" or "pkill -f node" or "pkill -9 -f node"
+  or any command that kills ALL Node.js processes. Other Node.js servers are
+  running on this machine that you must not touch.
+- To restart YOUR project's server, kill only the specific process by PID or by
+  matching the exact script path: e.g. pkill -f "node server/index.js" scoped
+  to your project directory, or kill a specific PID you captured earlier.
+- NEVER use broad process killers like "killall node" or "taskkill /IM node.exe".
+
 Dev server configuration:
 If this project has a web dev server, it MUST listen on port ${devServerPort}.
 End-to-end verification (Playwright) navigates to http://localhost:${devServerPort}
@@ -488,6 +497,20 @@ function makeWorkspaceGuardExtension(projectDir, onDenied) {
     if (toolName === "bash") {
       const cmd = String(input?.command ?? "");
       if (!cmd) return null;
+
+      // Block broad process killers that would take down the harness server.
+      const dangerousKillPatterns = [
+        /taskkill\s+\/F\s+\/IM\s+node\.exe/i,
+        /killall\s+node/i,
+        /pkill\s+(-\d+\s+)?-f\s+["']?node["']?\s*$/im,
+        /pkill\s+(-\d+\s+)?-f\s+["']?node["']?\s*[;&|]/im,
+      ];
+      for (const pat of dangerousKillPatterns) {
+        if (pat.test(cmd)) {
+          return `Blocked: "${cmd.slice(0, 80)}" would kill ALL Node.js processes including the harness server. Kill only your project's specific process by PID or exact script path.`;
+        }
+      }
+
       let m;
       ABS_PATH_RE.lastIndex = 0;
       while ((m = ABS_PATH_RE.exec(cmd)) !== null) {

@@ -3,7 +3,14 @@
 import React from "react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { Trash2 } from "lucide-react";
 import { useShell } from "@/components/app-shell/shell-context";
+import { DeleteProjectDialog } from "@/components/app-shell/delete-project-dialog";
+import {
+  ContextMenu,
+  ContextMenuItem,
+  useContextMenu,
+} from "@/components/ui/context-menu";
 import {
   PlusIcon,
   ActivityIcon,
@@ -25,6 +32,13 @@ export function ForgeSidebar({ mobileOpen = false, onMobileClose }: ForgeSidebar
   const pathname = usePathname();
 
   const [collapsed, setCollapsed] = React.useState(false);
+
+  const contextMenu = useContextMenu();
+  const [contextProject, setContextProject] = React.useState<{
+    id: number;
+    name: string;
+  } | null>(null);
+  const [deleteOpen, setDeleteOpen] = React.useState(false);
 
   React.useEffect(() => {
     try {
@@ -111,6 +125,10 @@ export function ForgeSidebar({ mobileOpen = false, onMobileClose }: ForgeSidebar
               style={{ textDecoration: "none", color: "inherit" }}
               title={p.name}
               onClick={handleWorkspaceClick}
+              onContextMenu={(e) => {
+                setContextProject({ id: p.id, name: p.name });
+                contextMenu.open(e);
+              }}
             >
               <div className={"ws-item " + (isActive ? "active" : "")}>
                 <div className="ws-row">
@@ -160,6 +178,28 @@ export function ForgeSidebar({ mobileOpen = false, onMobileClose }: ForgeSidebar
           </button>
         </Link>
       </div>
+
+      <ContextMenu state={contextMenu.state} onClose={contextMenu.close}>
+        <ContextMenuItem
+          variant="destructive"
+          onClick={() => {
+            contextMenu.close();
+            setDeleteOpen(true);
+          }}
+        >
+          <Trash2 size={14} />
+          Delete workspace
+        </ContextMenuItem>
+      </ContextMenu>
+
+      {contextProject && (
+        <DeleteProjectDialog
+          open={deleteOpen}
+          onOpenChange={setDeleteOpen}
+          projectId={contextProject.id}
+          projectName={contextProject.name}
+        />
+      )}
     </aside>
   );
 }

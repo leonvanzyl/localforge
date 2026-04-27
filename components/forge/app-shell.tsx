@@ -52,7 +52,7 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
   }, [mobileMenuOpen]);
 
   const { toggleTheme } = useTheme();
-  const { openNewProjectDialog } = useShell();
+  const { openNewProjectDialog, projects } = useShell();
   const { activeProject, isRunning, requestRefresh } = useActiveProject();
 
   const getActiveProjectId = React.useCallback(() => {
@@ -136,10 +136,48 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
     };
   }, []);
 
+  // Start/pause all handlers — these POST to the active project's orchestrator
+  // and then bump the shared refresh tick so project-view re-fetches slot
+  // state immediately instead of waiting for the 5s poll tick. Without this
+  // nudge the UI feels unresponsive after "run queue" and users may
+  // double-click, racing another start_all against the first.
+  const handleStartAll = React.useCallback(() => {
+    const projectId = getActiveProjectId();
+    if (!projectId) return;
+    fetch(`/api/projects/${projectId}/orchestrator`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "start_all" }),
+    })
+      .then(() => {
+        requestRefresh();
+        router.refresh();
+      })
+      .catch(() => {
+        /* ignore */
+      });
+  }, [getActiveProjectId, requestRefresh, router]);
+
+  const handlePauseAll = React.useCallback(() => {
+    const projectId = getActiveProjectId();
+    if (!projectId) return;
+    fetch(`/api/projects/${projectId}/orchestrator`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "stop_all" }),
+    })
+      .then(() => {
+        requestRefresh();
+        router.refresh();
+      })
+      .catch(() => {
+        /* ignore */
+      });
+  }, [getActiveProjectId, requestRefresh, router]);
+
   // Keyboard shortcuts
   React.useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // Ignore when typing in an input/textarea
       const tag = (e.target as HTMLElement)?.tagName?.toLowerCase();
       if (tag === "input" || tag === "textarea" || tag === "select") return;
 
@@ -183,50 +221,38 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
         openNewProjectDialog();
         return;
       }
+
+      if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+        e.preventDefault();
+        if (isRunning) {
+          handlePauseAll();
+        } else {
+          handleStartAll();
+        }
+        return;
+      }
+
+      const digit = parseInt(e.key, 10);
+      if (
+        digit >= 1 &&
+        digit <= 9 &&
+        (e.ctrlKey || e.metaKey) &&
+        !e.shiftKey &&
+        !e.altKey
+      ) {
+        const list = projects ?? [];
+        const target = list[digit - 1];
+        if (target) {
+          e.preventDefault();
+          router.push(`/projects/${target.id}`);
+        }
+        return;
+      }
     }
 
     window.addEventListener("keydown", handleKeyDown);
     return () => window.removeEventListener("keydown", handleKeyDown);
-  }, [toggleTheme, openNewProjectDialog]);
-
-  // Start/pause all handlers — these POST to the active project's orchestrator
-  // and then bump the shared refresh tick so project-view re-fetches slot
-  // state immediately instead of waiting for the 5s poll tick. Without this
-  // nudge the UI feels unresponsive after "run queue" and users may
-  // double-click, racing another start_all against the first.
-  const handleStartAll = React.useCallback(() => {
-    const projectId = getActiveProjectId();
-    if (!projectId) return;
-    fetch(`/api/projects/${projectId}/orchestrator`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "start_all" }),
-    })
-      .then(() => {
-        requestRefresh();
-        router.refresh();
-      })
-      .catch(() => {
-        /* ignore */
-      });
-  }, [getActiveProjectId, requestRefresh, router]);
-
-  const handlePauseAll = React.useCallback(() => {
-    const projectId = getActiveProjectId();
-    if (!projectId) return;
-    fetch(`/api/projects/${projectId}/orchestrator`, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ action: "stop_all" }),
-    })
-      .then(() => {
-        requestRefresh();
-        router.refresh();
-      })
-      .catch(() => {
-        /* ignore */
-      });
-  }, [getActiveProjectId, requestRefresh, router]);
+  }, [toggleTheme, openNewProjectDialog, isRunning, projects, router, handleStartAll, handlePauseAll]);
 
   return (
     <div
