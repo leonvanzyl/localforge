@@ -71,3 +71,6 @@ scripts/.commit-msg-*.txt
 
 # Harness internals (not part of the app)
 .autoforge/
+
+# Claude Code
+.claude/scheduled_tasks.lock
