@@ -331,7 +331,10 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
     browser = await chromium.launch({ headless: true });
     const context = await browser.newContext();
     const page = await context.newPage();
-    await page.goto(baseUrl, { timeout: 15000, waitUntil: "domcontentloaded" });
+    await page.goto(baseUrl, { timeout: 15000, waitUntil: "networkidle" });
+    // Wait for React/framework to hydrate — networkidle handles most cases
+    // but give an extra moment for client-side rendering to settle.
+    await page.waitForTimeout(2000);
     const title = await page.title();
     const url = page.url();
     await page.screenshot({ path: screenshotPath, fullPage: false });
@@ -370,7 +373,7 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
   }
 }
 
-function buildCodingSystemPrompt(projectDir, additionalInstructions, devServerPort) {
+function buildCodingSystemPrompt(projectDir, additionalInstructions, devServerPort, playwrightEnabled) {
   const base = `You are LocalForge's coding agent.
 
 You have been handed ONE backlog feature for a local project. Implement it
@@ -408,7 +411,23 @@ after your session completes — a mismatch means the screenshot captures the
 wrong app. Start scripts, config files (package.json scripts, next.config.*,
 vite.config.*), and any hard-coded baseURL in tests should all use port
 ${devServerPort}. This is authoritative; do not pick a different port even
-if "Additional project-specific instructions" below seems to suggest one.`;
+if "Additional project-specific instructions" below seems to suggest one.
+
+${playwrightEnabled ? `
+Browser testing with playwright-cli:
+After implementing a feature, you MUST verify it works via the browser using
+playwright-cli (available as a bash command). This is mandatory — do not skip it.
+  1. Open the app: playwright-cli open http://localhost:${devServerPort}
+  2. Take a snapshot to see elements: playwright-cli snapshot
+  3. Read the snapshot file to find element refs
+  4. Click elements: playwright-cli click <ref>
+  5. Fill inputs: playwright-cli fill <ref> "value"
+  6. Take a screenshot: playwright-cli screenshot
+  7. Read the screenshot file to verify visual appearance
+  8. Check console errors: playwright-cli console
+  9. Close when done: playwright-cli close
+The snapshot and screenshot commands save files to .playwright-cli/. Read the
+output file to see the results. Always close the browser when finished.` : ""}`;
 
   if (additionalInstructions && additionalInstructions.trim()) {
     return base + `\n\nAdditional project-specific instructions:\n${additionalInstructions.trim()}`;
@@ -621,7 +640,7 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
-      systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort),
+      systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort, process.env.LOCALFORGE_PLAYWRIGHT_ENABLED === "true"),
       extensionFactories: [workspaceGuardExtension],
     });
     await loader.reload();
