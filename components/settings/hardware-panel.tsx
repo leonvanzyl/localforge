@@ -1,9 +1,11 @@
 "use client";
 
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
   compareToAvailable,
   estimateModelVram,
+  pickBestFit,
   suggestSizesForBudget,
   type FitStatus,
 } from "@/lib/models/vram-estimates";
@@ -59,7 +61,15 @@ function statusToTone(status: FitStatus): {
   }
 }
 
-export function HardwarePanel({ model }: { model: string }) {
+export function HardwarePanel({
+  model,
+  installedModels,
+  onModelChange,
+}: {
+  model: string;
+  installedModels?: string[];
+  onModelChange?: (modelId: string) => void;
+}) {
   const [hw, setHw] = useState<HardwareInfo | null>(null);
 
   useEffect(() => {
@@ -115,6 +125,15 @@ export function HardwarePanel({ model }: { model: string }) {
     ? compareToAvailable(estimate.vramMB, hw.totalVramMB)
     : null;
 
+  // Only suggest a swap when the current pick doesn't fit AND we know the
+  // user's installed models AND a different model would actually be better.
+  const bestFit =
+    status !== "fits" && installedModels && installedModels.length > 0
+      ? pickBestFit(installedModels, hw.totalVramMB)
+      : null;
+  const showBestFit =
+    bestFit !== null && bestFit.modelId !== model && onModelChange !== undefined;
+
   return (
     <div
       data-testid="settings-hardware-panel"
@@ -147,6 +166,29 @@ export function HardwarePanel({ model }: { model: string }) {
           availableMB={hw.totalVramMB}
           memoryLabel={memoryLabel}
         />
+      )}
+
+      {showBestFit && bestFit && (
+        <div
+          data-testid="settings-bestfit-suggestion"
+          className="flex flex-col gap-2 rounded-md border border-border bg-background/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
+        >
+          <p className="text-xs text-muted-foreground">
+            Best fit from your installed models:{" "}
+            <span className="font-mono text-foreground">{bestFit.modelId}</span>{" "}
+            ({bestFit.estimate.paramsB}B, ≈{" "}
+            <span className="font-mono">{formatGB(bestFit.estimate.vramMB)}</span>)
+          </p>
+          <Button
+            type="button"
+            size="sm"
+            variant="secondary"
+            data-testid="settings-bestfit-apply"
+            onClick={() => onModelChange?.(bestFit.modelId)}
+          >
+            Use best fit
+          </Button>
+        </div>
       )}
 
       {!estimate && model && (

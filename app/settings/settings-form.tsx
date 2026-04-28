@@ -183,7 +183,11 @@ export function SettingsForm({ initial }: { initial: FormState }) {
         onChange={(v) => update("model", v)}
       />
 
-      <HardwarePanel model={values.model} />
+      <HardwarePanel
+        model={values.model}
+        installedModels={probe.status === "ok" ? probe.models : undefined}
+        onModelChange={(v) => update("model", v)}
+      />
 
       <Field
         label="Working directory"

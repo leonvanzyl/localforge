@@ -86,3 +86,46 @@ export function suggestSizesForBudget(availableMB: number): string[] {
   }
   return out;
 }
+
+/**
+ * Given a list of installed/available model ids and a VRAM budget, return
+ * the largest model id that fits comfortably (≤ 70% of available VRAM).
+ *
+ * Falls back to the largest one that fits "tight" (≤ 100%) only if no
+ * comfortable fit exists. Returns `null` if nothing fits or no model id
+ * exposes a parseable parameter count.
+ */
+export function pickBestFit(
+  modelIds: readonly string[],
+  availableMB: number,
+): { modelId: string; estimate: ModelEstimate; status: FitStatus } | null {
+  type Candidate = {
+    modelId: string;
+    estimate: ModelEstimate;
+    status: FitStatus;
+  };
+
+  const candidates: Candidate[] = [];
+  for (const modelId of modelIds) {
+    const estimate = estimateModelVram(modelId);
+    if (!estimate) continue;
+    const status = compareToAvailable(estimate.vramMB, availableMB);
+    candidates.push({ modelId, estimate, status });
+  }
+
+  if (candidates.length === 0) return null;
+
+  // Prefer the largest comfortable fit. If none, the largest tight fit. Never
+  // recommend a model that won't fit.
+  const fitting = candidates
+    .filter((c) => c.status === "fits")
+    .sort((a, b) => b.estimate.paramsB - a.estimate.paramsB);
+  if (fitting.length > 0) return fitting[0];
+
+  const tight = candidates
+    .filter((c) => c.status === "tight")
+    .sort((a, b) => b.estimate.paramsB - a.estimate.paramsB);
+  if (tight.length > 0) return tight[0];
+
+  return null;
+}
