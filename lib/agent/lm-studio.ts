@@ -35,9 +35,21 @@ export type LMStudioStreamEvent =
   | { type: "error"; message: string };
 
 export class LMStudioUnavailableError extends Error {
-  constructor(message: string, options?: { cause?: unknown }) {
-    super(message, options);
+  /**
+   * Optional refined classification that the providers wrapper layer turns
+   * into a {@link ProviderFailureKind}. Only set on call-paths where we have
+   * better information than what {@link classifyFetchError} can derive from
+   * the cause chain (e.g. an HTTP 200 with the wrong JSON shape). Network
+   * failures leave this undefined so classifyFetchError can do its work.
+   */
+  public readonly kind?: "http_error" | "wrong_shape";
+  constructor(
+    message: string,
+    options?: { cause?: unknown; kind?: "http_error" | "wrong_shape" },
+  ) {
+    super(message, options ? { cause: options.cause } : undefined);
     this.name = "LMStudioUnavailableError";
+    this.kind = options?.kind;
   }
 }
 
@@ -240,14 +252,24 @@ export async function listModels(
     const body = await res.text().catch(() => "");
     throw new LMStudioUnavailableError(
       `LM Studio /v1/models returned ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`,
+      { kind: "http_error" },
     );
   }
 
-  const payload = (await res.json().catch(() => ({}))) as {
-    data?: Array<{ id?: unknown }>;
-  };
+  // 200 OK is necessary but not sufficient — the URL may be pointing at a
+  // different OpenAI-compatible server, or worse, an HTML page. Require the
+  // canonical { data: [...] } shape before treating the response as valid.
+  const payload = (await res.json().catch(() => null)) as {
+    data?: unknown;
+  } | null;
+  if (!payload || !Array.isArray(payload.data)) {
+    throw new LMStudioUnavailableError(
+      `${baseUrl}/v1/models responded but did not return an LM Studio-shaped payload (expected { data: [...] }) — is this URL pointing at LM Studio?`,
+      { kind: "wrong_shape" },
+    );
+  }
   const ids: string[] = [];
-  for (const row of payload.data ?? []) {
+  for (const row of payload.data as Array<{ id?: unknown }>) {
     if (typeof row?.id === "string") ids.push(row.id);
   }
 

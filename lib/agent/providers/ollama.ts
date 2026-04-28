@@ -63,11 +63,24 @@ export const ollamaProvider: LocalModelProvider = {
       );
     }
 
-    const payload = (await res.json().catch(() => ({}))) as {
-      models?: Array<{ name?: unknown; model?: unknown }>;
-    };
+    // 200 OK is necessary but not sufficient — guard against the URL
+    // pointing at a different server that happens to answer 200 with HTML
+    // or some other shape. Require the canonical { models: [...] } payload.
+    const payload = (await res.json().catch(() => null)) as {
+      models?: unknown;
+    } | null;
+    if (!payload || !Array.isArray(payload.models)) {
+      throw new ProviderUnavailableError(
+        "ollama",
+        "wrong_shape",
+        `${baseUrl}/api/tags responded but did not return an Ollama-shaped payload (expected { models: [...] }) — is this URL pointing at Ollama?`,
+      );
+    }
     const names: string[] = [];
-    for (const row of payload.models ?? []) {
+    for (const row of payload.models as Array<{
+      name?: unknown;
+      model?: unknown;
+    }>) {
       const candidate =
         typeof row?.name === "string"
           ? row.name

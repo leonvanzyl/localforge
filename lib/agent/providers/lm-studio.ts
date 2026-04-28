@@ -26,13 +26,11 @@ export const lmStudioProvider: LocalModelProvider = {
       return await listLmStudioModels(baseUrl, timeoutMs);
     } catch (err) {
       if (err instanceof LMStudioUnavailableError) {
-        // Errors thrown from the response-status branch include "returned "
-        // (e.g. "/v1/models returned 404"); everything else came from the
-        // network branch, where the underlying fetch error is on `cause`
-        // and classifyFetchError walks that chain to pick out the code.
-        const kind = err.message.includes("returned ")
-          ? "http_error"
-          : classifyFetchError(err);
+        // The client tags response-side failures (HTTP error, wrong JSON
+        // shape) with a kind directly. Network failures leave kind unset
+        // and we fall back to classifyFetchError which walks `cause` to
+        // pull the Node-style code out (ECONNREFUSED, ENOTFOUND, etc.).
+        const kind = err.kind ?? classifyFetchError(err);
         throw new ProviderUnavailableError("lm_studio", kind, err.message);
       }
       throw err;

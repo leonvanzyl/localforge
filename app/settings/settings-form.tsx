@@ -127,15 +127,22 @@ export function SettingsForm({ initial }: { initial: FormState }) {
 
   // When the configured provider can't be reached, kick off a parallel scan
   // of every known provider's default port. If something else is responding
-  // we surface a one-click "switch to <provider>" suggestion. We only run
-  // the scan once per failure cycle to keep the dev log quiet.
+  // we surface a one-click "switch to <provider>" suggestion. The scan
+  // fires once per error→error transition (i.e. once per failure cycle);
+  // a recovery resets state so a future failure can scan again.
+  const lastProbeStatusRef = useRef<ModelsProbe["status"]>("idle");
   useEffect(() => {
+    const previous = lastProbeStatusRef.current;
+    lastProbeStatusRef.current = probe.status;
+
     if (probe.status !== "error") {
-      // Reset on recovery so a future failure can scan again.
-      if (scan.status !== "idle") setScan({ status: "idle" });
+      setScan({ status: "idle" });
       return;
     }
-    if (scan.status !== "idle") return;
+    // Already scanned for this failure cycle — don't refire on every
+    // re-render while we remain in the error state.
+    if (previous === "error") return;
+
     let cancelled = false;
     setScan({ status: "loading" });
     fetch("/api/providers/scan", { cache: "no-store" })
@@ -149,9 +156,6 @@ export function SettingsForm({ initial }: { initial: FormState }) {
     return () => {
       cancelled = true;
     };
-    // We intentionally exclude `scan` from deps — it is set inside this
-    // effect and we only want to run when probe state changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [probe.status]);
 
   useEffect(() => {
