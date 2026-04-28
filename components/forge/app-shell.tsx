@@ -7,6 +7,7 @@ import { useShell } from "@/components/app-shell/shell-context";
 import { TopBar } from "@/components/forge/top-bar";
 import { ForgeSidebar } from "@/components/forge/sidebar";
 import { ShortcutsModal } from "@/components/forge/modals";
+import { HelpModal } from "@/components/forge/help-modal";
 import { ActivityDrawer, type ActivityEvent } from "@/components/forge/activity-drawer";
 import { NewProjectDialog } from "@/components/app-shell/new-project-dialog";
 import { AgentNotifications } from "@/components/agent/agent-notifications";
@@ -22,6 +23,14 @@ import {
  */
 function ForgeShellInner({ children }: { children: React.ReactNode }) {
   const [shortcutsOpen, setShortcutsOpen] = React.useState(false);
+  const [helpOpen, setHelpOpen] = React.useState(false);
+
+  // Allow any component to open the help modal via a custom event
+  React.useEffect(() => {
+    const onHelpOpen = () => setHelpOpen(true);
+    window.addEventListener("help:open", onHelpOpen);
+    return () => window.removeEventListener("help:open", onHelpOpen);
+  }, []);
   const [drawerOpen, setDrawerOpen] = React.useState(false);
   const [mobileMenuOpen, setMobileMenuOpen] = React.useState(false);
   const [events, setEvents] = React.useState<ActivityEvent[]>([]);
@@ -271,6 +280,7 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
         onPauseAll={handlePauseAll}
         onToggleDrawer={() => setDrawerOpen((v) => !v)}
         onToggleShortcuts={() => setShortcutsOpen((v) => !v)}
+        onToggleHelp={() => setHelpOpen((v) => !v)}
         onToggleMobileMenu={() => setMobileMenuOpen((v) => !v)}
         drawerOpen={drawerOpen}
       />
@@ -299,6 +309,10 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
       <ShortcutsModal
         open={shortcutsOpen}
         onClose={() => setShortcutsOpen(false)}
+      />
+      <HelpModal
+        open={helpOpen}
+        onClose={() => setHelpOpen(false)}
       />
       <NewProjectDialog />
       <AgentNotifications />
