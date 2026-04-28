@@ -171,6 +171,8 @@ export function HardwarePanel({
       {showBestFit && bestFit && (
         <div
           data-testid="settings-bestfit-suggestion"
+          role="status"
+          aria-live="polite"
           className="flex flex-col gap-2 rounded-md border border-border bg-background/60 px-3 py-2 sm:flex-row sm:items-center sm:justify-between"
         >
           <p className="text-xs text-muted-foreground">
