@@ -87,16 +87,28 @@ export function SettingsForm({ initial }: { initial: FormState }) {
   // Debounced model probe — refires whenever the provider or the active URL
   // changes. Sharing the same effect means switching provider also triggers
   // a re-fetch against the *new* provider's URL without a separate hook.
+  //
+  // Stale-call protection: every probe holds an AbortController so that when
+  // the deps change (e.g. user clicks "Switch to Ollama") any in-flight fetch
+  // from the previous provider is aborted. Without this, the old fetch would
+  // resolve after we've already moved to the new provider and call setProbe
+  // with stale data — producing a brief flash of the wrong status and (under
+  // React 19's strict checks in dev) a "state update on a component that
+  // hasn't mounted yet" console warning.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const probeAbortRef = useRef<AbortController | null>(null);
   const runProbe = useCallback(
     (provider: string, url: string) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (probeAbortRef.current) probeAbortRef.current.abort();
       setProbe({ status: "loading" });
+      const controller = new AbortController();
+      probeAbortRef.current = controller;
       debounceRef.current = setTimeout(async () => {
         try {
           const res = await fetch(
             `/api/providers/${provider}/models?url=${encodeURIComponent(url)}`,
-            { cache: "no-store" },
+            { cache: "no-store", signal: controller.signal },
           );
           const data = (await res.json()) as {
             ok?: boolean;
@@ -104,6 +116,7 @@ export function SettingsForm({ initial }: { initial: FormState }) {
             error?: string;
             kind?: ProbeFailureKind;
           };
+          if (controller.signal.aborted) return;
           if (!res.ok || !data.ok) {
             setProbe({
               status: "error",
@@ -114,6 +127,8 @@ export function SettingsForm({ initial }: { initial: FormState }) {
           }
           setProbe({ status: "ok", models: data.models ?? [] });
         } catch (err) {
+          if (controller.signal.aborted) return;
+          if (err instanceof Error && err.name === "AbortError") return;
           setProbe({
             status: "error",
             message: err instanceof Error ? err.message : "Probe failed",
@@ -162,6 +177,7 @@ export function SettingsForm({ initial }: { initial: FormState }) {
     runProbe(activeProvider, activeUrl);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (probeAbortRef.current) probeAbortRef.current.abort();
     };
   }, [activeProvider, activeUrl, runProbe]);
 
