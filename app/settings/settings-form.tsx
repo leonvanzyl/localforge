@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { HardwarePanel } from "@/components/settings/hardware-panel";
 import type { GlobalSettingsShape } from "@/lib/settings";
 
 type FormState = GlobalSettingsShape;
@@ -181,6 +182,8 @@ export function SettingsForm({ initial }: { initial: FormState }) {
         model={values.model}
         onChange={(v) => update("model", v)}
       />
+
+      <HardwarePanel model={values.model} />
 
       <Field
         label="Working directory"
