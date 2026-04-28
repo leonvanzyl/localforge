@@ -35,8 +35,8 @@ export type LMStudioStreamEvent =
   | { type: "error"; message: string };
 
 export class LMStudioUnavailableError extends Error {
-  constructor(message: string) {
-    super(message);
+  constructor(message: string, options?: { cause?: unknown }) {
+    super(message, options);
     this.name = "LMStudioUnavailableError";
   }
 }
@@ -230,6 +230,7 @@ export async function listModels(
     const msg = err instanceof Error ? err.message : String(err);
     throw new LMStudioUnavailableError(
       `Could not reach LM Studio at ${baseUrl}: ${msg}`,
+      { cause: err },
     );
   } finally {
     clearTimeout(timer);

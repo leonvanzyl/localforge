@@ -5,6 +5,7 @@ import {
   LMStudioUnavailableError,
 } from "../lm-studio";
 import {
+  classifyFetchError,
   type LocalModelProvider,
   ProviderUnavailableError,
 } from "./types";
@@ -25,7 +26,14 @@ export const lmStudioProvider: LocalModelProvider = {
       return await listLmStudioModels(baseUrl, timeoutMs);
     } catch (err) {
       if (err instanceof LMStudioUnavailableError) {
-        throw new ProviderUnavailableError("lm_studio", err.message);
+        // Errors thrown from the response-status branch include "returned "
+        // (e.g. "/v1/models returned 404"); everything else came from the
+        // network branch, where the underlying fetch error is on `cause`
+        // and classifyFetchError walks that chain to pick out the code.
+        const kind = err.message.includes("returned ")
+          ? "http_error"
+          : classifyFetchError(err);
+        throw new ProviderUnavailableError("lm_studio", kind, err.message);
       }
       throw err;
     }

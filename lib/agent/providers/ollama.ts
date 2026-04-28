@@ -1,6 +1,7 @@
 import "server-only";
 
 import {
+  classifyFetchError,
   type LocalModelProvider,
   ProviderUnavailableError,
 } from "./types";
@@ -46,6 +47,7 @@ export const ollamaProvider: LocalModelProvider = {
       const msg = err instanceof Error ? err.message : String(err);
       throw new ProviderUnavailableError(
         "ollama",
+        classifyFetchError(err),
         `Could not reach Ollama at ${baseUrl}: ${msg}`,
       );
     } finally {
@@ -56,6 +58,7 @@ export const ollamaProvider: LocalModelProvider = {
       const body = await res.text().catch(() => "");
       throw new ProviderUnavailableError(
         "ollama",
+        "http_error",
         `Ollama /api/tags returned ${res.status}${body ? `: ${body.slice(0, 200)}` : ""}`,
       );
     }
