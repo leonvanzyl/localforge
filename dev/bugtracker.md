@@ -91,11 +91,18 @@ making the kanban unusable.
 
 ## BUG-002 — Typing lag in feature detail dialog during agent runs
 
-**Status:** FIXED — pending live verification (no in-dialog typing was
-performed during the 2026-04-29 19m run; needs a re-test on the next live
-run to confirm subjective smoothness)
+**Status:** VERIFIED (2026-04-29 second live run on DreamForgeIdeas with
+`qwen2.5-coder:32b`)
 **Reported:** 2026-04-29
 **Severity:** Medium (UX — feels like the input is autosaving on every keystroke)
+
+**Verification evidence:**
+
+- During an active `qwen2.5-coder:32b` agent run with continuous SSE log
+  events streaming to the kanban (the most realistic stress condition),
+  opened a non-active backlog feature and typed a long sentence into the
+  Acceptance criteria textarea. Typing felt instant — no per-keystroke
+  delay, no character drops.
 
 ### Symptom
 
@@ -149,10 +156,16 @@ contributors that compounded during agent runs:
 
 ## BUG-003 — Bonus accessibility fix: dependency picker missing accessible name
 
-**Status:** FIXED — pending verification (lint-only verified; needs a quick
-DevTools accessibility-tree check during the next live run)
+**Status:** VERIFIED (2026-04-29 DevTools console check)
 **Reported:** 2026-04-29 (caught by stricter Next 16 / eslint-plugin-jsx-a11y)
 **Severity:** Low (a11y)
+
+**Verification evidence:**
+
+- In the running app, opened a backlog feature dialog, opened DevTools
+  Console, and ran:
+  `document.querySelector('[data-testid="feature-detail-dep-picker"]').getAttribute('aria-label')`
+- Result: `'Add a prerequisite feature'` (the expected string).
 
 ### Symptom
 
@@ -230,6 +243,43 @@ the bug fixes above to keep the contribution scope tight.
 1. Run `npm run lint` — expect ESLint to execute and report the pre-existing
    debt list above (3 errors, ~17 warnings).
 2. Run `npx tsc --noEmit` — expect clean (no errors).
+
+---
+
+## BUG-004 — "Run queue" silently no-ops from non-kanban routes
+
+**Status:** OPEN (observed during 2026-04-29 verification, not yet
+investigated or fixed; out of scope for the current PR)
+**Reported:** 2026-04-29
+**Severity:** Medium (data loss in user trust — the user thinks they
+launched a run, nothing happens, no error feedback)
+
+### Symptom
+
+Clicking the "Run queue" button while the user is on a sub-route or modal
+overlay (e.g. settings panel just closed) sometimes results in:
+
+- The button click registers visually (no error toast)
+- No `START_REQUEST` entry appears in `agent-runner-debug.log`
+- No POST hits the orchestrator endpoint in the dev-server access log
+- The agent panel stays idle indefinitely
+- Refreshing the page and clicking the button again works correctly
+
+### Hypotheses (not yet confirmed)
+
+1. The button's onClick uses a relative URL or a stale `projectId` derived
+   from page state that's undefined on certain routes.
+2. A modal overlay (settings) intercepts the click event even when it
+   appears closed.
+3. Hot module reload during a settings save resets the orchestrator's
+   in-memory state mid-click.
+
+### Triage suggestion
+
+Check the request actually fires by opening DevTools Network tab, click
+Run queue, and confirm a POST appears. If no request fires, the bug is
+client-side. If the request fires and returns a non-200, it's
+server-side. Currently no instrumentation distinguishes these.
 
 ---
 
@@ -424,14 +474,114 @@ defend at different layers.
 
 ---
 
+## ENH-004 — Bulk-select and delete on the kanban
+
+**Status:** PROPOSED (not yet implemented)
+**Reported:** 2026-04-29
+**Severity:** Low (DX — currently a 10-feature reset requires 30 clicks)
+
+### Symptom
+
+When iterating on backlog content (especially while testing the harness
+itself, but also for normal users who want to redo an AI-generated
+backlog), the only way to remove multiple feature cards is to open each
+card individually, click "Delete feature", and confirm — three clicks per
+card. Resetting a 10-card backlog takes ~30 clicks and minutes of
+repetitive work.
+
+### Proposed fix
+
+Add a bulk-select mode to the kanban:
+
+1. A "Select" toggle in the kanban header switches each card into a state
+   with a checkbox in the corner.
+2. Selecting one or more cards reveals a sticky action bar with
+   "Delete N selected" and "Cancel" buttons.
+3. Confirming triggers a bulk DELETE — either via a new
+   `DELETE /api/projects/[id]/features` endpoint accepting an `ids[]`
+   array, or by issuing parallel single-feature DELETEs from the client.
+4. Optional: also offer "Skip N selected" (move to end of queue) and
+   "Set status..." actions.
+
+### Files that would change
+
+- `components/forge/forge-kanban.tsx` (selection state + action bar)
+- `components/kanban/feature-card.tsx` (checkbox in select mode)
+- `app/api/projects/[id]/features/route.ts` (optional bulk DELETE)
+
+### Manual test plan
+
+1. Click "Select" in the kanban header.
+2. Click 3 cards across different columns — confirm checkboxes appear and
+   stay checked.
+3. Click "Delete 3 selected" → confirmation dialog → confirm.
+4. All 3 cards disappear; sticky action bar dismisses.
+5. Test edge cases: deleting an in-progress feature (should warn), and
+   trying to bulk-select while an agent is running.
+
+---
+
+## ENH-005 — Soften "Won't fit" warning to allow CPU spillover
+
+**Status:** PROPOSED (not yet implemented)
+**Reported:** 2026-04-29
+**Severity:** Low (UX — discourages valid power-user choices)
+
+### Symptom
+
+The hardware-detection panel currently rejects models that exceed
+available VRAM with the wording:
+
+> **Won't fit — switch to a smaller model**
+> qwen2.5-coder:32b (32B) needs ≈ 20.5 GB at Q4 — your VRAM is 8.0 GB.
+> Suggested model sizes that fit: 0-2B, 2-4B, 4-9B
+
+This is overly prescriptive. Ollama can run an oversized model by
+spilling unfit layers to system RAM/CPU. The result is much slower
+generation (often 3–10 tokens/sec, vs. 30–80 tok/s when fully on GPU)
+but still functional and useful for batch / overnight runs.
+
+Verified during the 2026-04-29 run: with this exact warning displayed,
+`qwen2.5-coder:32b` ran successfully on a machine with 8GB VRAM,
+producing real working code with reasonable per-feature wall time.
+
+### Proposed fix
+
+Replace the "switch to a smaller model" framing with one that explains
+the trade-off:
+
+> **Won't fit fully in VRAM**
+> qwen2.5-coder:32b (32B) needs ≈ 20.5 GB at Q4, your VRAM is 8.0 GB.
+> Ollama will offload unfit layers to system RAM/CPU, so generation will
+> be significantly slower (often 3–10 tokens/sec). For faster runs, use
+> a model that fits in VRAM. Suggested fully-fitting sizes: 0-2B, 2-4B, 4-9B.
+
+The "Use best fit" button can stay — it's a reasonable shortcut. The
+panel border color could shift from red ("error") to amber ("warning").
+
+### Files that would change
+
+- `components/settings/hardware-panel.tsx` (or wherever the warning copy
+  lives)
+
+### Manual test plan
+
+1. Configure a model that exceeds VRAM (e.g. `qwen2.5-coder:32b` on 8GB).
+2. Verify the new warning copy renders — yellow/amber, not red, and
+   names the trade-off explicitly.
+3. Click run queue and confirm the run still proceeds (i.e. the warning
+   does not block start).
+
+---
+
 ## Verification checklist (before opening PR to leonvanzyl/localforge)
 
 - [x] BUG-001: gemma3:4b stops retrying after one failure with guidance message
 - [x] BUG-001: switching to llama3.2 unblocks the feature on next Start
-- [ ] BUG-002: typing in acceptance criteria is smooth during a live agent run
-      (re-run with `qwen2.5-coder:7b` and type during SSE traffic)
-- [ ] BUG-003: dependency picker is announced with its purpose (DevTools
-      accessibility-tree check)
+- [x] BUG-002: typing in acceptance criteria is smooth during a live agent run
+      (verified 2026-04-29 with `qwen2.5-coder:32b`)
+- [x] BUG-003: dependency picker is announced with its purpose (DevTools
+      console returned `'Add a prerequisite feature'`)
 - [x] CHORE-001: `npm run lint` runs without the "Invalid project directory" error
 - [x] `npx tsc --noEmit` is clean
 - [ ] No regressions on the kanban DnD, Save flow, Delete flow, dependency edit
@@ -450,6 +600,15 @@ Files included in the upstream contribution:
 - `dev/bugtracker.md` (this file — included in PR per user request, so
   reviewers can see verification evidence and the proposed enhancements)
 
-ENH-001 and ENH-002 are tracked here but **NOT implemented in this PR**.
-They should be filed as separate issues / PRs upstream so the current
+**NOT implemented in this PR — tracked here for future contributions:**
+
+- BUG-004 — Run queue silently no-ops from non-kanban routes (needs
+  separate triage)
+- ENH-001 — Treat `tool_calls === 0` as failure
+- ENH-002 — Copy logs to clipboard
+- ENH-003 — Capability-aware model picker (warn for low-capability models)
+- ENH-004 — Bulk-select and delete on the kanban
+- ENH-005 — Soften "Won't fit" warning to allow CPU spillover
+
+These should be filed as separate issues / PRs upstream so the current
 contribution stays narrowly scoped to the verified bug fixes.
