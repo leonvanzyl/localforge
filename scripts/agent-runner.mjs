@@ -786,11 +786,39 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
     });
   }
 
-  const ok =
+  let ok =
     errorMessage == null &&
     (resultSubtype === "success" ||
       resultSubtype === "end_turn" ||
       resultSubtype === undefined);
+
+  // Confabulation guard. Some local-model + provider combinations (observed
+  // with qwen2.5-coder:32b and llama3.2:3b on Ollama via openai-completions)
+  // emit JSON-shaped tool calls as plain assistant text instead of structured
+  // tool_use content blocks. Pi never executes them, toolCalls stays at 0,
+  // but resultSubtype is still "success" — so the orchestrator marks the
+  // feature completed despite zero filesystem mutations. The result is a
+  // 10/10 green-toast project with an empty working directory.
+  //
+  // Treat any session that ran to a normal "success" with zero tool calls
+  // as a failure. We only override when ok is otherwise true (so we don't
+  // mask a real upstream error), and we leave permanent=false so a retry
+  // with a better-behaved model still has a chance.
+  const minToolCalls = Number.parseInt(
+    process.env.LOCALFORGE_MIN_TOOL_CALLS ?? "1",
+    10,
+  );
+  const minFloor =
+    Number.isFinite(minToolCalls) && minToolCalls >= 0 ? minToolCalls : 1;
+  if (ok && toolCalls < minFloor) {
+    debugLog("CONFABULATION_GUARD_TRIPPED", {
+      toolCalls,
+      minFloor,
+      lastAssistantTextSnippet: lastAssistantText.slice(0, 200),
+    });
+    ok = false;
+    errorMessage = `Agent claimed success without invoking any tools (toolCalls=${toolCalls}, required>=${minFloor}). The model likely emitted tool calls as plain text instead of structured tool_use blocks — common with some Ollama + small-model combinations. No filesystem changes were made. Try a different model (qwen2.5-coder:7b or llama3.1:8b are reliable on Ollama), or set LOCALFORGE_MIN_TOOL_CALLS=0 if you have a feature that genuinely requires no tool calls.`;
+  }
 
   debugLog("PI_SESSION_RESULT", {
     ok,

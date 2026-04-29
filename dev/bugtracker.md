@@ -285,67 +285,105 @@ server-side. Currently no instrumentation distinguishes these.
 
 ## ENH-001 — Treat `tool_calls === 0` as failure, not success
 
-**Status:** PROPOSED (not yet implemented)
+**Status:** IMPLEMENTED (2026-04-29 — added confabulation guard in
+`scripts/agent-runner.mjs`)
 **Reported:** 2026-04-29
-**Severity:** Medium (the harness can mark fake completions as "done", which
-silently corrupts a project's progress and gives no signal to the user that
-the model is confabulating instead of working)
+**Severity:** High — upgraded after second confabulation observed with
+`qwen2.5-coder:32b` on Ollama. This is not a small-model-only quirk; it
+hits a much wider population of users than originally thought.
 
 ### Symptom
 
-On the 2026-04-29 verification run, `llama3.2:3b` produced 10/10 green
-"completed" toasts in 19m 02s for the DreamForgeIdeas backlog, with the
-celebration screen and "Project Complete" UI. Inspecting the project
-working directory `H:\localforge\projects\dreamforgeideas-2` afterwards
-showed it was **empty except for the `.pi/` config folder** — the agent had
-made zero file writes. The model produced final assistant messages claiming
-completion ("I have scaffolded the Next.js app...") without ever invoking
-`Bash`, `Edit`, or `Write` tools.
+On the 2026-04-29 verification run, **two different models on Ollama
+both produced 10/10 green "completed" toasts with zero file writes**:
+
+- `llama3.2:3b` (3B params): 19m 02s, 0 tool calls, empty project dir.
+- `qwen2.5-coder:32b` (32B params, CPU-spilled): 45m 21s, 0 tool calls,
+  empty project dir.
+
+Both produced the celebration screen and "Project Complete" UI. The
+project working directory `H:\localforge\projects\dreamforgeideas-2`
+contained only the `.pi/` config folder afterwards.
 
 ### Root cause
 
-`scripts/agent-runner.mjs:runCodingAgentOnce()` returns `ok: true` whenever
-the Pi SDK reports a successful session subtype, regardless of whether
-`toolCalls > 0`. There is no floor on the amount of actual work an agent
-must do to claim a feature is complete.
+The agent-runner debug log for the qwen run captures the failure mode
+exactly. From session 593 (feature #14 "Scaffold Next.js app"):
 
-For features whose acceptance criteria require filesystem mutations
-(scaffolding, file creation, dependency installation), zero tool calls is
-trivially incompatible with success.
+```text
+[PI_LOOP_EXITED_NORMALLY] { messageCount: 95, toolCalls: 0, resultSubtype: "success", turns: 1 }
+[PI_SESSION_RESULT] {
+  ok: true,
+  errorMessage: null,
+  resultSubtype: "success",
+  toolCalls: 0,
+  lastAssistantTextSnippet: '{"name": "bash", "arguments": {"command": "npm uninstall -y next..."}}\n\n{"name": "bash", "arguments": {"command": "npx create-next-app@latest..."}}'
+}
+```
 
-### Proposed fix
+The model **emitted JSON-shaped tool calls in the assistant message body
+as plain text**, instead of using the structured `tool_use` content
+blocks the Pi SDK + Ollama OpenAI-compatible API expect. Pi never parsed
+those JSON blobs as tool calls, so they never executed. But because Pi
+reported the session ended with `resultSubtype === "success"`,
+`scripts/agent-runner.mjs:runCodingAgentOnce()` returned `ok: true`
+regardless of `toolCalls === 0`. Orchestrator marked the feature
+completed. Repeat 10 times, get a "Project Complete!" celebration.
 
-In `scripts/agent-runner.mjs`, treat `result.toolCalls === 0` as a failure
-unless the feature explicitly opts in to tool-less completion (extremely
-rare — maybe a research/notes-only feature). Concretely:
+This is not a Pi SDK bug — Pi worked correctly given what it received.
+It is also not strictly a "bad model" bug — `qwen2.5-coder:32b` is
+specifically marketed as tool-call-capable. The actual cause is one of:
 
-1. After `runCodingAgent()` returns, if `result.ok && result.toolCalls === 0`:
-   - Log an error explaining the model produced no tool calls
-   - Override `result.ok = false`, set
-     `result.errorMessage = "Agent claimed success without invoking any tools — likely confabulating."`
-   - Do **not** mark this as `permanent` (the next session may behave
-     differently — it's a quality issue, not a config issue)
-2. Make the floor configurable via `LOCALFORGE_MIN_TOOL_CALLS` env var
-   (default 1) for users who genuinely have no-op features.
+1. Ollama's OpenAI-compat tool-call shim drops or mangles the schema for
+   some model + provider combinations.
+2. The model's instruction-following on tool-call format is inconsistent
+   when prompted via the openai-completions API path vs Ollama's native
+   `/api/chat` endpoint.
+3. Pi's tool definitions get stripped by an intermediate proxy.
 
-### Files that would change
+Whichever is true, the harness side of the trust contract is the same:
+**zero tool calls is incompatible with marking a filesystem-mutating
+feature complete.**
 
-- `scripts/agent-runner.mjs`
-- `lib/agent/orchestrator.ts` (only if we want to surface a distinct
-  "no-op claimed" status in the UI — optional)
+### Implementation (this PR)
+
+In `scripts/agent-runner.mjs:runCodingAgentOnce()`, after the Pi loop
+exits and the initial `ok` is computed, a guard now overrides `ok` to
+`false` and sets a descriptive `errorMessage` whenever
+`toolCalls < LOCALFORGE_MIN_TOOL_CALLS` (default 1). The error message
+explicitly names the likely cause (text-shaped tool calls), warns the
+user that no filesystem changes were made, and recommends alternative
+models. The flag is configurable via `LOCALFORGE_MIN_TOOL_CALLS=0` for
+users who legitimately have research-only features.
+
+The downstream classification falls through unchanged: `isPermanentError`
+does not match the new message (correct — the same feature might use
+tools properly on a different attempt), `isTransientError` also does not
+match (correct — retrying the same model is unlikely to help). So the
+runner gives up after the first attempt, the orchestrator demotes the
+feature with the standard backlog priority bump, and the user sees a
+clear UI error telling them to switch models.
+
+### Files changed
+
+- `scripts/agent-runner.mjs` — added `CONFABULATION_GUARD_TRIPPED` debug
+  trace, the `minToolCalls` floor read from env, and the `ok` override.
 
 ### Manual test plan
 
-1. Configure project to use `llama3.2:3b` (or any small model that tends
-   to confabulate).
-2. Add a feature whose work clearly requires file writes (e.g. "Create
-   hello.txt").
+1. Configure project to use a model that confabulates on Ollama (e.g.
+   `qwen2.5-coder:32b` with CPU spillover, or `llama3.2:3b`).
+2. Add a feature whose work requires file writes (the standard
+   DreamForgeIdeas backlog works).
 3. Click run queue.
-4. **Expect:** if the model claims success without invoking tools, the
-   feature is marked failed (not completed), and the log shows the new
-   "claimed success without invoking any tools" message.
-5. Verify a normal run with `qwen2.5-coder:7b` is unaffected (real tool
-   calls → still completes normally).
+4. **Expect:** the feature is marked failed (not completed), the agent
+   log shows "Agent claimed success without invoking any tools
+   (toolCalls=0, required>=1). The model likely emitted tool calls as
+   plain text...", and the project working directory is empty.
+5. Switch to a known-good model (`qwen2.5-coder:7b`, `llama3.1:8b`) and
+   verify normal runs are unaffected — real tool calls → still complete.
+6. Set `LOCALFORGE_MIN_TOOL_CALLS=0` in the environment and verify the
+   guard is bypassed (escape hatch for tool-less features).
 
 ---
 
@@ -541,9 +579,13 @@ spilling unfit layers to system RAM/CPU. The result is much slower
 generation (often 3–10 tokens/sec, vs. 30–80 tok/s when fully on GPU)
 but still functional and useful for batch / overnight runs.
 
-Verified during the 2026-04-29 run: with this exact warning displayed,
-`qwen2.5-coder:32b` ran successfully on a machine with 8GB VRAM,
-producing real working code with reasonable per-feature wall time.
+Observed during the 2026-04-29 run: with this exact warning displayed,
+`qwen2.5-coder:32b` ran on a machine with 8GB VRAM at reasonable wall
+time per feature (~3-5 minutes). It did not produce working code in
+that run, but for an unrelated reason (the confabulation issue covered
+by ENH-001 — same model output zero tool calls regardless of VRAM).
+The point stands: the runtime is functional even when the model
+doesn't fit in VRAM, so the warning shouldn't read like a hard block.
 
 ### Proposed fix
 
@@ -584,6 +626,9 @@ panel border color could shift from red ("error") to amber ("warning").
       console returned `'Add a prerequisite feature'`)
 - [x] CHORE-001: `npm run lint` runs without the "Invalid project directory" error
 - [x] `npx tsc --noEmit` is clean
+- [x] ENH-001: confabulation guard rejects sessions with zero tool calls
+      (implementation tested via typecheck + lint; behavior pending live
+      verification on the next run)
 - [ ] No regressions on the kanban DnD, Save flow, Delete flow, dependency edit
       (manual smoke pass before commit)
 
@@ -591,7 +636,8 @@ panel border color could shift from red ("error") to amber ("warning").
 
 Files included in the upstream contribution:
 
-- `scripts/agent-runner.mjs` (BUG-001 — permanent-error classification)
+- `scripts/agent-runner.mjs` (BUG-001 — permanent-error classification;
+  ENH-001 — confabulation guard)
 - `lib/agent/orchestrator.ts` (BUG-001 — blocklist + plumb permanent flag)
 - `lib/features.ts` (BUG-001 — `excludeIds` parameter)
 - `components/kanban/feature-detail-dialog.tsx` (BUG-002 + BUG-003)
@@ -604,7 +650,6 @@ Files included in the upstream contribution:
 
 - BUG-004 — Run queue silently no-ops from non-kanban routes (needs
   separate triage)
-- ENH-001 — Treat `tool_calls === 0` as failure
 - ENH-002 — Copy logs to clipboard
 - ENH-003 — Capability-aware model picker (warn for low-capability models)
 - ENH-004 — Bulk-select and delete on the kanban
