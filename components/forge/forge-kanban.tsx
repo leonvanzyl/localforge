@@ -23,6 +23,8 @@ import {
 } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
 
+import { Trash2 } from "lucide-react";
+
 import { SearchIcon } from "@/components/forge/icons";
 import {
   FeatureNumbersProvider,
@@ -236,6 +238,7 @@ function DroppableForgeColumn({
   filter,
   onAdd,
   onOpen,
+  onClearCompleted,
 }: {
   col: ColumnDef;
   items: FeatureCardData[];
@@ -243,6 +246,13 @@ function DroppableForgeColumn({
   filter: string;
   onAdd: () => void;
   onOpen: (id: number) => void;
+  /**
+   * Render a destructive "Clear" button in the column header (ENH-004).
+   * Only honoured for the Completed column and only when the column has
+   * at least one card. The parent owns the confirmation prompt and the
+   * delete logic.
+   */
+  onClearCompleted?: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.id });
 
@@ -271,6 +281,21 @@ function DroppableForgeColumn({
           <span className="t">{col.title}</span>
           <span className="c">{items.length}</span>
         </div>
+        {col.id === "completed" && onClearCompleted && items.length > 0 && (
+          <button
+            type="button"
+            onClick={onClearCompleted}
+            data-testid={`kanban-column-clear-${col.id}`}
+            aria-label={`Delete all ${items.length} completed ${
+              items.length === 1 ? "feature" : "features"
+            }`}
+            title="Delete every card in this column"
+            className="col-clear"
+          >
+            <Trash2 size={11} aria-hidden="true" />
+            Clear
+          </button>
+        )}
       </div>
       <div className="col-body" ref={setNodeRef}>
         <SortableContext items={itemIds} strategy={verticalListSortingStrategy}>
@@ -408,6 +433,53 @@ export function ForgeKanban({
       window.removeEventListener("orchestrator:changed", onRefresh);
     };
   }, [load]);
+
+  /**
+   * ENH-004 — bulk-delete every card in the Completed column. Cheap reset
+   * for users who want to redo a project (especially during testing or
+   * iteration). Confirms via window.confirm to avoid an accidental wipe,
+   * then fires N parallel single-feature DELETEs through the existing API
+   * so we don't need a new bulk endpoint. On success we re-fetch the
+   * feature list; on partial failure we surface the first error and still
+   * re-fetch so the UI reflects whatever did get deleted.
+   */
+  const handleClearCompleted = React.useCallback(async () => {
+    if (state.kind !== "ready") return;
+    const completedIds = state.features
+      .filter((f) => f.status === "completed")
+      .map((f) => f.id);
+    if (completedIds.length === 0) return;
+    const confirmed = window.confirm(
+      `Delete all ${completedIds.length} completed ${
+        completedIds.length === 1 ? "feature" : "features"
+      }? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    setDragError(null);
+    const results = await Promise.allSettled(
+      completedIds.map((id) =>
+        fetch(`/api/features/${id}`, { method: "DELETE" }).then(async (res) => {
+          if (!res.ok) {
+            const data = (await res.json().catch(() => ({}))) as {
+              error?: string;
+            };
+            throw new Error(data.error || `Delete failed (${res.status})`);
+          }
+        }),
+      ),
+    );
+    const firstFailure = results.find(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    if (firstFailure) {
+      setDragError(
+        firstFailure.reason instanceof Error
+          ? firstFailure.reason.message
+          : "Failed to clear some completed features",
+      );
+    }
+    await load();
+  }, [state, load]);
 
   /* --- Drag handlers --- */
 
@@ -642,6 +714,9 @@ export function ForgeKanban({
                 filter={filter}
                 onAdd={() => setAddDialogStatus(col.id)}
                 onOpen={(id) => setDetailFeatureId(id)}
+                onClearCompleted={
+                  col.id === "completed" ? handleClearCompleted : undefined
+                }
               />
             ))}
           </div>

@@ -220,6 +220,53 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
     void load();
   }, [load]);
 
+  /**
+   * ENH-004 — bulk-delete every card in the Completed column. Cheap reset
+   * for users who want to redo a project (especially during testing /
+   * re-runs). Confirms via window.confirm to avoid an accidental wipe,
+   * then fires N parallel single-feature DELETEs through the existing API
+   * so we don't need a new bulk endpoint. On success we re-fetch the
+   * feature list; on partial failure we surface the first error and still
+   * re-fetch so the UI reflects whatever did get deleted.
+   */
+  const handleClearCompleted = React.useCallback(async () => {
+    if (state.kind !== "ready") return;
+    const completedIds = state.features
+      .filter((f) => f.status === "completed")
+      .map((f) => f.id);
+    if (completedIds.length === 0) return;
+    const confirmed = window.confirm(
+      `Delete all ${completedIds.length} completed ${
+        completedIds.length === 1 ? "feature" : "features"
+      }? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    setDragError(null);
+    const results = await Promise.allSettled(
+      completedIds.map((id) =>
+        fetch(`/api/features/${id}`, { method: "DELETE" }).then(async (res) => {
+          if (!res.ok) {
+            const data = (await res.json().catch(() => ({}))) as {
+              error?: string;
+            };
+            throw new Error(data.error || `Delete failed (${res.status})`);
+          }
+        }),
+      ),
+    );
+    const firstFailure = results.find(
+      (r): r is PromiseRejectedResult => r.status === "rejected",
+    );
+    if (firstFailure) {
+      setDragError(
+        firstFailure.reason instanceof Error
+          ? firstFailure.reason.message
+          : "Failed to clear some completed features",
+      );
+    }
+    await load();
+  }, [state, load]);
+
   // Reload whenever the orchestrator (or another action) flips feature
   // status - e.g. start/stop buttons, agent completion events. Anyone can
   // dispatch `kanban:refresh` to ask this board to re-query the API.
@@ -464,6 +511,9 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
                 items={items}
                 onAdd={() => setAddDialogStatus(col.id)}
                 onOpen={(id) => setDetailFeatureId(id)}
+                onClearCompleted={
+                  col.id === "completed" ? handleClearCompleted : undefined
+                }
               />
             );
           })}
@@ -534,11 +584,13 @@ function DroppableColumn({
   items,
   onAdd,
   onOpen,
+  onClearCompleted,
 }: {
   col: ColumnDef;
   items: FeatureCardData[];
   onAdd: () => void;
   onOpen: (id: number) => void;
+  onClearCompleted?: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.id });
   const itemIds = React.useMemo(() => items.map((i) => i.id), [items]);
@@ -550,6 +602,7 @@ function DroppableColumn({
       emptyHint={col.emptyHint}
       count={items.length}
       onAdd={onAdd}
+      onClearCompleted={onClearCompleted}
       bodyRef={setNodeRef}
       bodyClassName={cn(
         // Highlight column body while a card is being dragged over it so

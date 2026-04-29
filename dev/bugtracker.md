@@ -514,7 +514,9 @@ defend at different layers.
 
 ## ENH-004 — Bulk-select and delete on the kanban
 
-**Status:** PROPOSED (not yet implemented)
+**Status:** PARTIALLY IMPLEMENTED (2026-04-29 — added "Clear" button on
+the Completed column header; broader bulk-select-with-checkboxes design
+is still future work)
 **Reported:** 2026-04-29
 **Severity:** Low (DX — currently a 10-feature reset requires 30 clicks)
 
@@ -527,9 +529,63 @@ card individually, click "Delete feature", and confirm — three clicks per
 card. Resetting a 10-card backlog takes ~30 clicks and minutes of
 repetitive work.
 
-### Proposed fix
+### What this PR ships (first iteration)
 
-Add a bulk-select mode to the kanban:
+A focused subset of the original proposal: a destructive **"Clear"**
+button on the Completed column header. It is rendered only when the
+column has at least one card. Clicking it opens a `window.confirm`
+naming the count, and on accept fires N parallel
+`DELETE /api/features/:id` requests through the existing single-feature
+endpoint (no new bulk API needed). On any failure, the first error is
+surfaced via the existing `dragError` channel and the feature list is
+re-fetched so the UI reflects whatever did get deleted.
+
+The button is wired into both kanban implementations:
+
+- `components/kanban/kanban-column.tsx` (the shared primitive used by
+  the celebration view's `KanbanBoard`) — receives a new
+  `onClearCompleted` prop that only renders when `id === "completed"`
+  and `displayCount > 0`.
+- `components/forge/forge-kanban.tsx` — `DroppableForgeColumn` gets the
+  same prop and renders an equivalent button using a new `.col-clear`
+  class added to `app/globals.css` (matching the workshop aesthetic).
+
+Both kanbans wire the click to a `handleClearCompleted` callback that
+shares the same delete-then-refresh logic, intentionally duplicated
+(~20 lines each) rather than abstracted prematurely.
+
+### Files changed in this PR
+
+- `components/kanban/kanban-column.tsx` — new `onClearCompleted` prop +
+  conditional Trash2 button.
+- `components/kanban/kanban-board.tsx` — `handleClearCompleted` callback
+  and prop forwarding through `DroppableColumn`.
+- `components/forge/forge-kanban.tsx` — same handler + prop forwarding
+  through `DroppableForgeColumn`, plus a Trash2 import from lucide-react.
+- `app/globals.css` — new `.col-clear` class for the forge-aesthetic
+  button (avoids inline styles per project rule).
+
+### Manual test plan (this iteration)
+
+1. Open a project with at least one card in the Completed column.
+2. **Expect:** a "Clear" button (red, with a trash icon) appears in the
+   Completed column header.
+3. Click the button. **Expect:** native browser confirm dialog naming
+   the exact count of features to delete.
+4. Cancel. **Expect:** nothing happens; cards remain.
+5. Click again, accept. **Expect:** all completed cards disappear; the
+   "Clear" button is no longer rendered (column is empty).
+6. Reload the page. **Expect:** completed cards remain deleted (this is
+   not optimistic-only state).
+7. Trigger a forced 5xx on one of the DELETEs (e.g. block one feature
+   id at the network layer). **Expect:** the first failure surfaces in
+   the kanban error banner; the other deletes still complete.
+8. Open both the celebration-view kanban and the active-project kanban —
+   confirm the button renders consistently in both.
+
+### Future iteration (still proposed, not in this PR)
+
+Add a richer bulk-select mode:
 
 1. A "Select" toggle in the kanban header switches each card into a state
    with a checkbox in the corner.
@@ -541,21 +597,9 @@ Add a bulk-select mode to the kanban:
 4. Optional: also offer "Skip N selected" (move to end of queue) and
    "Set status..." actions.
 
-### Files that would change
-
-- `components/forge/forge-kanban.tsx` (selection state + action bar)
-- `components/kanban/feature-card.tsx` (checkbox in select mode)
-- `app/api/projects/[id]/features/route.ts` (optional bulk DELETE)
-
-### Manual test plan
-
-1. Click "Select" in the kanban header.
-2. Click 3 cards across different columns — confirm checkboxes appear and
-   stay checked.
-3. Click "Delete 3 selected" → confirmation dialog → confirm.
-4. All 3 cards disappear; sticky action bar dismisses.
-5. Test edge cases: deleting an in-progress feature (should warn), and
-   trying to bulk-select while an agent is running.
+This builds on the column-scoped Clear shipped in this PR but generalises
+across all three columns and arbitrary subsets, suitable for backlog
+triage rather than just resets.
 
 ---
 
@@ -629,6 +673,9 @@ panel border color could shift from red ("error") to amber ("warning").
 - [x] ENH-001: confabulation guard rejects sessions with zero tool calls
       (implementation tested via typecheck + lint; behavior pending live
       verification on the next run)
+- [x] ENH-004 (first iteration): Clear button on Completed column
+      (typecheck + lint clean; behavior pending live verification — test
+      using DreamForgeIdeas after the next agent run completes)
 - [ ] No regressions on the kanban DnD, Save flow, Delete flow, dependency edit
       (manual smoke pass before commit)
 
@@ -641,6 +688,11 @@ Files included in the upstream contribution:
 - `lib/agent/orchestrator.ts` (BUG-001 — blocklist + plumb permanent flag)
 - `lib/features.ts` (BUG-001 — `excludeIds` parameter)
 - `components/kanban/feature-detail-dialog.tsx` (BUG-002 + BUG-003)
+- `components/kanban/kanban-column.tsx` (ENH-004 — `onClearCompleted` prop)
+- `components/kanban/kanban-board.tsx` (ENH-004 — handler + prop forwarding)
+- `components/forge/forge-kanban.tsx` (ENH-004 — handler + button + prop
+  forwarding)
+- `app/globals.css` (ENH-004 — `.col-clear` style)
 - `eslint.config.mjs` (CHORE-001 — new file)
 - `package.json` (CHORE-001 — `lint` script update)
 - `dev/bugtracker.md` (this file — included in PR per user request, so
@@ -652,7 +704,9 @@ Files included in the upstream contribution:
   separate triage)
 - ENH-002 — Copy logs to clipboard
 - ENH-003 — Capability-aware model picker (warn for low-capability models)
-- ENH-004 — Bulk-select and delete on the kanban
+- ENH-004 (broader iteration) — Bulk-select-with-checkboxes across all
+  columns; the column-scoped Clear button shipped in this PR is the
+  first iteration.
 - ENH-005 — Soften "Won't fit" warning to allow CPU spillover
 
 These should be filed as separate issues / PRs upstream so the current

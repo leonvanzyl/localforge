@@ -443,6 +443,18 @@
 .col[data-col="done"] .col-title .t,
 .col[data-col="completed"] .col-title .t { color: var(--good); }
 
+/* ENH-004: bulk-clear button on the Completed column header. Destructive,
+   so it borrows the bad-state colour and only shows when the column is
+   non-empty. */
+.col-clear {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500;
+  color: var(--bad); background: transparent; border: 1px solid var(--bad); border-radius: 4px;
+  cursor: pointer; transition: background .12s, color .12s;
+}
+.col-clear:hover { background: var(--bad); color: var(--panel); }
+.col-clear:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }
+
 .col-body { flex: 1; padding: 2px; display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
 
 .card {
