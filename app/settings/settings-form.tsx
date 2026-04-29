@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useRef, useState, useTransition } from "react";
 import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
+import { HardwarePanel } from "@/components/settings/hardware-panel";
 import type { GlobalSettingsShape } from "@/lib/settings";
 
 type FormState = GlobalSettingsShape;
@@ -180,6 +181,12 @@ export function SettingsForm({ initial }: { initial: FormState }) {
         provider={activeProvider}
         model={values.model}
         onChange={(v) => update("model", v)}
+      />
+
+      <HardwarePanel
+        model={values.model}
+        installedModels={probe.status === "ok" ? probe.models : undefined}
+        onModelChange={(v) => update("model", v)}
       />
 
       <Field

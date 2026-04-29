@@ -66,6 +66,9 @@ scripts/.commit-msg-*.txt
 /data/*.db-shm
 /data/*.db-wal
 
+# Hardware detection cache (machine-specific, regenerated on first use)
+/data/hardware-cache.json
+
 # LocalForge-generated project folders (user projects)
 /projects/
 
