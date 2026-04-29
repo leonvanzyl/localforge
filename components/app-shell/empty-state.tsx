@@ -1,20 +1,17 @@
 "use client";
 
-import { Hammer, Sparkles } from "lucide-react";
+import Image from "next/image";
+import { Sparkles } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useShell } from "./shell-context";
 
-/**
- * Empty welcome screen displayed when no projects exist in the database.
- *
- * Verified by Feature #19 (empty state shown) and Feature #20 (CTA opens
- * the new-project dialog). The CTA calls openNewProjectDialog from the
- * shell context - the dialog itself is mounted once in AppShell so the
- * sidebar's "New" button opens the same instance.
- */
 export function EmptyState() {
   const { openNewProjectDialog } = useShell();
+
+  function openHelp() {
+    window.dispatchEvent(new CustomEvent("help:open"));
+  }
 
   return (
     <section
@@ -22,8 +19,35 @@ export function EmptyState() {
       className="flex flex-1 items-center justify-center p-8"
     >
       <div className="mx-auto w-full max-w-xl text-center">
-        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-primary/10 text-primary">
-          <Hammer className="h-8 w-8" aria-hidden="true" />
+        <div className="mx-auto flex justify-center">
+          <div
+            className="logo-fire-wrap"
+            onClick={openHelp}
+            title="Open Help & Tech Guide"
+            role="button"
+            tabIndex={0}
+            onKeyDown={(e) => {
+              if (e.key === "Enter" || e.key === " ") {
+                e.preventDefault();
+                openHelp();
+              }
+            }}
+            aria-label="Open Help & Tech Guide"
+          >
+            <Image
+              src="/LocalForgeLogo.png"
+              alt="LocalForge"
+              width={138}
+              height={138}
+              className="logo-fire-img"
+              priority
+            />
+            <span className="spark" />
+            <span className="spark" />
+            <span className="spark" />
+            <span className="spark" />
+            <span className="spark" />
+          </div>
         </div>
         <h1
           data-testid="empty-state-title"

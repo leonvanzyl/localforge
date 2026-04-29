@@ -1,6 +1,7 @@
 "use client";
 
 import React from "react";
+import { HelpCircle } from "lucide-react";
 import { useTheme } from "@/components/theme/theme-provider";
 import {
   PlayIcon,
@@ -24,6 +25,7 @@ type TopBarProps = {
   onPauseAll: () => void;
   onToggleDrawer: () => void;
   onToggleShortcuts: () => void;
+  onToggleHelp: () => void;
   onToggleMobileMenu: () => void;
   drawerOpen: boolean;
 };
@@ -35,6 +37,7 @@ export function TopBar({
   onPauseAll,
   onToggleDrawer,
   onToggleShortcuts,
+  onToggleHelp,
   onToggleMobileMenu,
   drawerOpen,
 }: TopBarProps) {
@@ -118,6 +121,16 @@ export function TopBar({
           title="Toggle activity drawer"
         >
           <ActivityIcon size={16} />
+        </button>
+
+        <button
+          type="button"
+          className="btn icon-btn ghost"
+          onClick={onToggleHelp}
+          aria-label="Open help & tech guide"
+          title="Help & tech guide"
+        >
+          <HelpCircle size={16} />
         </button>
 
         <button
