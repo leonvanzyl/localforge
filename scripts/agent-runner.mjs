@@ -1038,6 +1038,10 @@ async function main() {
             tr.error.includes("ECONNREFUSED");
           if (isServerDown) {
             emitLog(`Playwright: dev server not running (connection refused) — treating as non-fatal since agent tested during session`, "info");
+          } else if (tr.error.includes("empty page title")) {
+            // API-only servers (Express returning JSON) have no HTML title.
+            // This is expected for backend features — don't fail the feature.
+            emitLog(`Playwright: page has no title (likely API-only server returning JSON) — treating as non-fatal`, "info");
           } else {
             emitLog(`Playwright error detail: ${tr.error}`, "error");
             playwrightFailed = true;

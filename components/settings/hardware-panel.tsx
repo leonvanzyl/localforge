@@ -80,7 +80,8 @@ export function HardwarePanel({
         if (!cancelled) setHw(data);
       })
       .catch(() => {
-        // Silent — hardware detection is best-effort
+        if (!cancelled)
+          setHw({ available: false, platform: "linux", reason: "Hardware detection unavailable" });
       });
     return () => {
       cancelled = true;
