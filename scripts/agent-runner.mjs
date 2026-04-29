@@ -619,6 +619,29 @@ function isTransientError(errorMessage) {
   return transientPatterns.some((p) => lower.includes(p.toLowerCase()));
 }
 
+// Errors that will recur every time the same model + provider is used. Retrying
+// these — or demoting + re-picking the same feature — wastes tokens and turns
+// into a tight failure loop in the UI. The orchestrator treats permanent
+// failures specially: the feature is removed from the picker for the rest of
+// the process lifetime and a guidance message is surfaced to the user.
+function isPermanentError(errorMessage) {
+  if (!errorMessage) return false;
+  const permanentPatterns = [
+    "does not support tools",
+    "tool use is not supported",
+    "tools is not supported",
+    "model not found",
+    "unknown model",
+    "invalid api key",
+    "incorrect api key",
+    "unauthorized",
+    "401",
+    "403",
+  ];
+  const lower = errorMessage.toLowerCase();
+  return permanentPatterns.some((p) => lower.includes(p.toLowerCase()));
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -794,14 +817,21 @@ async function runCodingAgent(params) {
       return result;
     }
 
-    const transient = isTransientError(result.errorMessage);
+    const permanent = isPermanentError(result.errorMessage);
+    const transient = !permanent && isTransientError(result.errorMessage);
     debugLog("RETRY_WRAPPER_FAILED_ATTEMPT", {
       attempt,
       errorMessage: result.errorMessage,
       resultSubtype: result.resultSubtype,
+      isPermanent: permanent,
       isTransient: transient,
       willRetry: attempt < maxRetries && transient,
     });
+
+    if (permanent) {
+      debugLog("RETRY_WRAPPER_PERMANENT_ERROR", { errorMessage: result.errorMessage });
+      return { ...result, permanent: true };
+    }
 
     if (attempt < maxRetries && transient) {
       const delay = RETRY_DELAY_MS * attempt;
@@ -928,8 +958,10 @@ async function main() {
     });
 
     if (!result || !result.ok) {
+      const permanent = Boolean(result?.permanent);
       debugLog("OUTCOME_FAILURE_FROM_PI", {
         reason: result?.errorMessage ?? result?.resultSubtype,
+        permanent,
       });
       emitLog(
         `Agent session ended without success (${codingMs}ms, ${
@@ -939,13 +971,20 @@ async function main() {
         }`,
         "error",
       );
+      if (permanent) {
+        emitLog(
+          `This error will not resolve on retry — the configured model "${model}" is incompatible with the agent (e.g. lacks tool-call support). Switch to a tool-capable model in settings (try llama3.2, qwen2.5-coder, or mistral-nemo on Ollama) and click Start again.`,
+          "error",
+        );
+      }
       emit({
         type: "done",
         outcome: "failure",
         reason: result?.errorMessage ?? `result ${result?.resultSubtype ?? "unknown"}`,
+        permanent,
       });
       doneEmitted = true;
-      debugLog("DONE_EMITTED", { outcome: "failure", phase: "pi" });
+      debugLog("DONE_EMITTED", { outcome: "failure", phase: "pi", permanent });
       process.stdout.write("", () => process.exit(1));
       return;
     }

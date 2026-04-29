@@ -501,7 +501,9 @@ export function getInProgressFeaturesForProject(
 
 export function findNextReadyFeatureForProject(
   projectId: number,
+  options: { excludeIds?: ReadonlySet<number> } = {},
 ): FeatureRecord | null {
+  const exclude = options.excludeIds;
   const backlog = db
     .select()
     .from(features)
@@ -509,6 +511,7 @@ export function findNextReadyFeatureForProject(
       and(eq(features.projectId, projectId), eq(features.status, "backlog")),
     )
     .all()
+    .filter((f) => !exclude || !exclude.has(f.id))
     .sort((a, b) => {
       if (a.priority !== b.priority) return a.priority - b.priority;
       return a.id - b.id;

@@ -98,15 +98,7 @@ function formatLogTime(iso: string): string {
  * (separately) POST /api/features/:id/dependencies with the full new set.
  * On success the parent re-fetches the feature list so the kanban updates.
  */
-export function FeatureDetailDialog({
-  open,
-  featureId,
-  projectId,
-  onOpenChange,
-  onSaved,
-  onDeleted,
-  allFeatures,
-}: {
+type FeatureDetailDialogProps = {
   open: boolean;
   featureId: number | null;
   projectId: number;
@@ -119,7 +111,17 @@ export function FeatureDetailDialog({
    */
   onDeleted?: (featureId: number) => void;
   allFeatures: DetailFeature[];
-}) {
+};
+
+function FeatureDetailDialogImpl({
+  open,
+  featureId,
+  projectId,
+  onOpenChange,
+  onSaved,
+  onDeleted,
+  allFeatures,
+}: FeatureDetailDialogProps) {
   const [feature, setFeature] = React.useState<DetailFeature | null>(null);
   const [title, setTitle] = React.useState("");
   const [description, setDescription] = React.useState("");
@@ -299,6 +301,30 @@ export function FeatureDetailDialog({
       (f) => f.id !== feature.id && !deps.includes(f.id),
     );
   }, [allFeatures, feature, deps]);
+
+  /**
+   * "Feature X of Y" header position. The kanban parent re-renders this
+   * dialog on every SSE event (the agent emits one every few hundred ms
+   * during a run), and an unmemoised `[...allFeatures].sort().findIndex()`
+   * on every keystroke is expensive enough to cause visible typing lag in
+   * the description / acceptance-criteria textareas. We key the memo on a
+   * derived id-list string so it only recomputes when features are
+   * actually added/removed/reordered — not when an unrelated field updates.
+   */
+  const idsKey = React.useMemo(
+    () => allFeatures.map((f) => f.id).join(","),
+    [allFeatures],
+  );
+  const featureNumber = React.useMemo(() => {
+    if (!feature) return null;
+    const sortedIds = idsKey
+      .split(",")
+      .filter((s) => s.length > 0)
+      .map((s) => Number(s))
+      .sort((a, b) => a - b);
+    const idx = sortedIds.indexOf(feature.id);
+    return idx >= 0 ? idx + 1 : null;
+  }, [feature, idsKey]);
 
   const depDetails = React.useMemo(() => {
     return deps
@@ -548,12 +574,8 @@ export function FeatureDetailDialog({
         >
           <DialogHeader>
             <DialogTitle id="feature-detail-title">
-              {feature
-                ? `Feature ${
-                    [...allFeatures]
-                      .sort((a, b) => a.id - b.id)
-                      .findIndex((f) => f.id === feature.id) + 1
-                  } of ${allFeatures.length}`
+              {feature && featureNumber !== null
+                ? `Feature ${featureNumber} of ${allFeatures.length}`
                 : "Feature details"}
             </DialogTitle>
           </DialogHeader>
@@ -750,6 +772,7 @@ export function FeatureDetailDialog({
                     <div className="flex items-center gap-2">
                       <select
                         data-testid="feature-detail-dep-picker"
+                        aria-label="Add a prerequisite feature"
                         value={depPick}
                         onChange={(e) => setDepPick(e.target.value)}
                         disabled={saving}
@@ -1144,3 +1167,41 @@ export function FeatureDetailDialog({
     </Dialog>
   );
 }
+
+/**
+ * Memo'd export. The kanban parent re-renders this dialog on every SSE event
+ * during an agent run because `state.features` is replaced (a new array) on
+ * each log. Without memoisation the user's typing in the description /
+ * acceptance-criteria fields ends up fighting per-event re-renders, which
+ * shows up as visible input lag.
+ *
+ * The custom comparator skips callback identity (parents typically pass
+ * inline arrows) and does a content-shallow check on `allFeatures` against
+ * just the fields the dialog actually consumes (id, title, status). It
+ * intentionally ignores other feature fields so updates to e.g. priority on
+ * an unrelated feature do not bust the memo.
+ */
+export const FeatureDetailDialog = React.memo(
+  FeatureDetailDialogImpl,
+  (prev, next) => {
+    if (prev.open !== next.open) return false;
+    if (prev.featureId !== next.featureId) return false;
+    if (prev.projectId !== next.projectId) return false;
+    const a = prev.allFeatures;
+    const b = next.allFeatures;
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const fa = a[i];
+      const fb = b[i];
+      if (
+        fa.id !== fb.id ||
+        fa.title !== fb.title ||
+        fa.status !== fb.status
+      ) {
+        return false;
+      }
+    }
+    return true;
+  },
+);

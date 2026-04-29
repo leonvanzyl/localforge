@@ -163,6 +163,16 @@ const SESSION_TIMEOUT_MS = Number.parseInt(
 type OrchestratorState = {
   running: Map<number, RunningSession>; // keyed by session id
   events: EventEmitter;
+  /**
+   * Per-process set of feature ids that ended their last session with a
+   * permanent (non-retryable) failure — e.g. the configured model does not
+   * support tool calls. Auto-continue and start-all skip these so the
+   * orchestrator does not infinite-loop demoting + re-picking the same
+   * feature. Cleared on process restart so users can simply restart the dev
+   * server (or re-pick the feature manually) once they fix the underlying
+   * config.
+   */
+  permanentlyBlocked: Set<number>;
 };
 
 // Hot-reload safe singleton. Next.js dev mode will clear this module's
@@ -177,10 +187,15 @@ function getState(): OrchestratorState {
     g[GLOBAL_KEY] = {
       running: new Map(),
       events: new EventEmitter(),
+      permanentlyBlocked: new Set<number>(),
     };
     // EventEmitter defaults to 10 listeners; SSE connections can stack up
     // during development hot reloads so raise the cap.
     g[GLOBAL_KEY].events.setMaxListeners(50);
+  } else if (!g[GLOBAL_KEY].permanentlyBlocked) {
+    // Hot-reload backfill: an older state object stashed by a previous
+    // version of this module won't have the blocklist. Initialise it.
+    g[GLOBAL_KEY].permanentlyBlocked = new Set<number>();
   }
   return g[GLOBAL_KEY];
 }
@@ -326,7 +341,9 @@ export function startOrchestrator(projectId: number): StartResult {
     );
   }
 
-  const feature = findNextReadyFeatureForProject(projectId);
+  const feature = findNextReadyFeatureForProject(projectId, {
+    excludeIds: getState().permanentlyBlocked,
+  });
   if (!feature) {
     throw new OrchestratorError(
       "No ready features to work on (backlog empty or all blocked)",
@@ -691,6 +708,14 @@ type RunnerDoneLine = {
   type: "done";
   outcome: "success" | "failure";
   reason?: string;
+  /**
+   * Set by the runner when the failure is known to be unrecoverable for the
+   * current model/provider combination (e.g. the model does not support tool
+   * calls). The orchestrator uses this to skip the feature on subsequent
+   * auto-continue picks within this process — otherwise the loop would burn
+   * tokens demoting + re-picking the same feature forever.
+   */
+  permanent?: boolean;
 };
 type RunnerLine = RunnerLogLine | RunnerDoneLine;
 
@@ -744,13 +769,19 @@ function handleRunnerLine(rs: RunningSession, raw: string): void {
 
   if (parsed.type === "done") {
     const outcome = parsed.outcome;
+    const done = parsed as RunnerDoneLine;
     debugLog("RUNNER_DONE_EVENT", {
       sessionId: rs.session.id,
       featureId: rs.feature.id,
       outcome,
-      reason: (parsed as RunnerDoneLine).reason,
+      reason: done.reason,
+      permanent: done.permanent,
     });
-    finalizeSession(rs, outcome === "success" ? "success" : "failed");
+    finalizeSession(
+      rs,
+      outcome === "success" ? "success" : "failed",
+      { permanent: Boolean(done.permanent) },
+    );
   }
 }
 
@@ -771,12 +802,15 @@ function normaliseMessageType(raw: unknown): AgentMessageType {
 function finalizeSession(
   rs: RunningSession,
   outcome: "success" | "failed" | "terminated",
+  options: { permanent?: boolean } = {},
 ): void {
+  const permanent = Boolean(options.permanent);
   debugLog("FINALIZE_SESSION_CALLED", {
     sessionId: rs.session.id,
     featureId: rs.feature.id,
     featureTitle: rs.feature.title,
     outcome,
+    permanent,
     inRunningMap: getState().running.has(rs.session.id),
   });
 
@@ -826,12 +860,22 @@ function finalizeSession(
     finalSessionStatus = "failed";
     const demoted = demoteFeatureToBacklog(rs.feature.id);
     finalFeature = demoted;
+    if (permanent) {
+      // Record the feature so auto-continue and start-all skip it for the
+      // rest of this process. Without this, the orchestrator would re-pick
+      // the same feature seconds later and fail again with the same error,
+      // burning through the kanban without making progress.
+      getState().permanentlyBlocked.add(rs.feature.id);
+    }
+    const baseMsg = demoted
+      ? `Feature "${rs.feature.title}" demoted back to backlog (priority ${demoted.priority})`
+      : `Feature "${rs.feature.title}" returned to backlog`;
     const log = appendAgentLog({
       sessionId: rs.session.id,
       featureId: rs.feature.id,
-      message: demoted
-        ? `Feature "${rs.feature.title}" demoted back to backlog (priority ${demoted.priority})`
-        : `Feature "${rs.feature.title}" returned to backlog`,
+      message: permanent
+        ? `${baseMsg} — paused until next restart due to a model-incompatibility error. Fix the model in settings, then click Start.`
+        : baseMsg,
       messageType: "error",
     });
     broadcast({
@@ -955,7 +999,9 @@ function maybeContinueWithNextFeature(rs: RunningSession): void {
       });
 
       for (let i = 0; i < slotsAvailable; i++) {
-        const next = findNextReadyFeatureForProject(projectId);
+        const next = findNextReadyFeatureForProject(projectId, {
+          excludeIds: getState().permanentlyBlocked,
+        });
         if (!next) {
           debugLog("MAYBE_CONTINUE_NO_MORE_FEATURES", { projectId, filledSlots: i });
           break;
@@ -1001,10 +1047,22 @@ export function startAllAgents(projectId: number): StartResult[] {
   const slotsAvailable =
     getMaxConcurrentAgentsForProject(projectId) - runningCount;
 
+  // An explicit Start (vs auto-continue) is the user's signal that they may
+  // have fixed the underlying config — clear any permanent-failure markers
+  // so previously-blocked features get another chance.
+  if (getState().permanentlyBlocked.size > 0) {
+    debugLog("START_ALL_AGENTS_CLEARING_BLOCKLIST", {
+      cleared: Array.from(getState().permanentlyBlocked),
+    });
+    getState().permanentlyBlocked.clear();
+  }
+
   debugLog("START_ALL_AGENTS", { projectId, runningCount, slotsAvailable });
 
   for (let i = 0; i < slotsAvailable; i++) {
-    const next = findNextReadyFeatureForProject(projectId);
+    const next = findNextReadyFeatureForProject(projectId, {
+      excludeIds: getState().permanentlyBlocked,
+    });
     if (!next) {
       debugLog("START_ALL_AGENTS_NO_MORE_FEATURES", { projectId, startedCount: i });
       break;
