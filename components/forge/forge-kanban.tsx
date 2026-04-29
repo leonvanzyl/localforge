@@ -371,6 +371,11 @@ export function ForgeKanban({
   React.useEffect(() => {
     stateRef.current = state;
   }, [state]);
+  // Guard against concurrent runs of `handleClearCompleted` if the user
+  // clicks the "Clear" button repeatedly before the first batch of DELETEs
+  // resolves. Without this, each click fires a fresh batch against the
+  // same ids and surfaces misleading 404 errors from the second wave.
+  const clearCompletedInFlightRef = React.useRef(false);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -445,6 +450,7 @@ export function ForgeKanban({
    */
   const handleClearCompleted = React.useCallback(async () => {
     if (state.kind !== "ready") return;
+    if (clearCompletedInFlightRef.current) return;
     const completedIds = state.features
       .filter((f) => f.status === "completed")
       .map((f) => f.id);
@@ -455,30 +461,37 @@ export function ForgeKanban({
       }? This cannot be undone.`,
     );
     if (!confirmed) return;
+    clearCompletedInFlightRef.current = true;
     setDragError(null);
-    const results = await Promise.allSettled(
-      completedIds.map((id) =>
-        fetch(`/api/features/${id}`, { method: "DELETE" }).then(async (res) => {
-          if (!res.ok) {
-            const data = (await res.json().catch(() => ({}))) as {
-              error?: string;
-            };
-            throw new Error(data.error || `Delete failed (${res.status})`);
-          }
-        }),
-      ),
-    );
-    const firstFailure = results.find(
-      (r): r is PromiseRejectedResult => r.status === "rejected",
-    );
-    if (firstFailure) {
-      setDragError(
-        firstFailure.reason instanceof Error
-          ? firstFailure.reason.message
-          : "Failed to clear some completed features",
+    try {
+      const results = await Promise.allSettled(
+        completedIds.map((id) =>
+          fetch(`/api/features/${id}`, { method: "DELETE" }).then(
+            async (res) => {
+              if (!res.ok) {
+                const data = (await res.json().catch(() => ({}))) as {
+                  error?: string;
+                };
+                throw new Error(data.error || `Delete failed (${res.status})`);
+              }
+            },
+          ),
+        ),
       );
+      const firstFailure = results.find(
+        (r): r is PromiseRejectedResult => r.status === "rejected",
+      );
+      if (firstFailure) {
+        setDragError(
+          firstFailure.reason instanceof Error
+            ? firstFailure.reason.message
+            : "Failed to clear some completed features",
+        );
+      }
+      await load();
+    } finally {
+      clearCompletedInFlightRef.current = false;
     }
-    await load();
   }, [state, load]);
 
   /* --- Drag handlers --- */

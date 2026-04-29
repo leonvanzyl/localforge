@@ -6,7 +6,7 @@ facing app.
 
 Status legend: `OPEN` · `FIXED — pending verification` · `VERIFIED` · `UPSTREAMED`
 
-Sections: BUG-* (defects), CHORE-* (project hygiene), ENH-* (proposed
+Sections: `BUG-*` (defects), `CHORE-*` (project hygiene), `ENH-*` (proposed
 enhancements — not yet implemented).
 
 ---

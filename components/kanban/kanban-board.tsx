@@ -159,6 +159,11 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
   // its SVG overlay can measure each card's position relative to the board
   // when drawing connector lines (Feature #52).
   const boardRef = React.useRef<HTMLDivElement>(null);
+  // Guard against concurrent runs of `handleClearCompleted` if the user
+  // clicks the "Clear" button repeatedly before the first batch of DELETEs
+  // resolves. Without this, each click fires a fresh batch against the
+  // same ids and surfaces misleading 404 errors from the second wave.
+  const clearCompletedInFlightRef = React.useRef(false);
 
   // PointerSensor with an activation distance so a click on a card still
   // opens the detail modal - the drag only starts after the user moves the
@@ -231,6 +236,7 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
    */
   const handleClearCompleted = React.useCallback(async () => {
     if (state.kind !== "ready") return;
+    if (clearCompletedInFlightRef.current) return;
     const completedIds = state.features
       .filter((f) => f.status === "completed")
       .map((f) => f.id);
@@ -241,30 +247,37 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
       }? This cannot be undone.`,
     );
     if (!confirmed) return;
+    clearCompletedInFlightRef.current = true;
     setDragError(null);
-    const results = await Promise.allSettled(
-      completedIds.map((id) =>
-        fetch(`/api/features/${id}`, { method: "DELETE" }).then(async (res) => {
-          if (!res.ok) {
-            const data = (await res.json().catch(() => ({}))) as {
-              error?: string;
-            };
-            throw new Error(data.error || `Delete failed (${res.status})`);
-          }
-        }),
-      ),
-    );
-    const firstFailure = results.find(
-      (r): r is PromiseRejectedResult => r.status === "rejected",
-    );
-    if (firstFailure) {
-      setDragError(
-        firstFailure.reason instanceof Error
-          ? firstFailure.reason.message
-          : "Failed to clear some completed features",
+    try {
+      const results = await Promise.allSettled(
+        completedIds.map((id) =>
+          fetch(`/api/features/${id}`, { method: "DELETE" }).then(
+            async (res) => {
+              if (!res.ok) {
+                const data = (await res.json().catch(() => ({}))) as {
+                  error?: string;
+                };
+                throw new Error(data.error || `Delete failed (${res.status})`);
+              }
+            },
+          ),
+        ),
       );
+      const firstFailure = results.find(
+        (r): r is PromiseRejectedResult => r.status === "rejected",
+      );
+      if (firstFailure) {
+        setDragError(
+          firstFailure.reason instanceof Error
+            ? firstFailure.reason.message
+            : "Failed to clear some completed features",
+        );
+      }
+      await load();
+    } finally {
+      clearCompletedInFlightRef.current = false;
     }
-    await load();
   }, [state, load]);
 
   // Reload whenever the orchestrator (or another action) flips feature
