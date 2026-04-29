@@ -84,6 +84,29 @@ part of this contribution.
   successfully cleared the in-process blocklist and re-picked feature #4.
   The full 10-feature backlog ran end-to-end in 19m 02s.
 
+**2026-04-29 follow-up — extended classifier with memory-exhaustion
+patterns:**
+
+During later verification of ENH-007, gpt-oss:20b on Ollama hit
+`500 model requires more system memory (8.0 GiB) than is available
+(2.9 GiB)` repeatedly. This is the same shape as the original
+"does not support tools" failure — retrying immediately won't help; the
+user needs to free RAM or pick a smaller model. Without recognising
+this as permanent, the orchestrator would auto-continue and re-pick
+the same feature, hitting the same memory error in a tight loop.
+
+`isPermanentError()` now matches:
+
+- `requires more system memory`
+- `out of memory`
+- `cuda out of memory`
+
+The user-facing guidance message also branches: memory errors get
+"close other heavy apps, or `ollama stop <other-model>`, or pick a
+smaller model" wording instead of the tool-support guidance. Verified
+in code review; not yet exercised live (the original error condition
+that surfaced this resolved when the user closed apps to free RAM).
+
 ### Symptom
 
 When the configured model does not support tool calls (e.g. `gemma3:4b` on
@@ -810,11 +833,12 @@ panel border color could shift from red ("error") to amber ("warning").
 
 ## ENH-007 — Idle-stop heuristic for sessions that won't terminate
 
-**Status:** IMPLEMENTED — pending live verification (typecheck + lint
-clean; behaviour pending re-test on the same `gpt-oss:20b` scaffold
-scenario that surfaced the original failure)
+**Status:** VERIFIED (2026-04-29 live run on DreamForgeIdeas with
+`gpt-oss:20b` and `LOCALFORGE_IDLE_STOP_MS=60000`; full chain
+traced — see Verification evidence below)
 **Reported:** 2026-04-29
 **Implemented:** 2026-04-29
+**Verified:** 2026-04-29
 **Severity:** Medium (sessions can burn the full 30-minute watchdog
 budget on no-op tool calls after they've actually finished the work,
 losing credit for completed features that get returned to backlog
@@ -937,9 +961,75 @@ Configurable via `LOCALFORGE_IDLE_STOP_MS`:
 
 ### Verification evidence
 
-(Pending — will populate after the live re-test using the same
-DreamForgeIdeas + `gpt-oss:20b` scenario that originally surfaced the
-failure.)
+Verified live 2026-04-29 with `gpt-oss:20b` on Ollama against the
+DreamForgeIdeas backlog. The original 30-min-watchdog failure pattern
+proved hard to reproduce on demand on the same hardware, so the test
+was run with `LOCALFORGE_IDLE_STOP_MS=60000` (1-minute threshold) to
+deterministically force idle-stop into a session that exhibited the
+expected post-bash idle stretch.
+
+**Session 665 timeline (pid 40164, feature #74 "Scaffold Next.js app"):**
+
+```text
+22:27:35  WORKSPACE_FINGERPRINT_BEFORE { count: 1, sum: 43 }
+22:28:23  PI_TOOL_USE bash               (npx create-next-app)
+22:28:36  PI_TOOL_USE bash               (retry npx create-next-app)
+22:29:21  PI_TOOL_USE bash               (mkdir app)
+22:29:37  PI_TOOL_USE                    (read/list during create-next-app
+                                          install phase running in-process)
+22:31:29  PI_TOOL_USE                    (more reads/lists)
+22:31:38  PI_TOOL_USE
+22:31:54  PI_TOOL_USE
+22:32:15  PI_TOOL_USE
+22:32:29  PI_TOOL_USE                    (last user-driven tool call)
+22:32:35  IDLE_STOP_TRIGGERED             ← ~60s after last bash end
+          { idleSinceMs: ~62000,
+            thresholdMs: 60000,
+            toolCalls: 11 }
+22:32:35  IDLE_STOP_OVERRIDE_RESULT
+          { previousResultSubtype: "aborted",
+            previousErrorMessage: "Request was aborted." }
+22:32:35  WORKSPACE_FINGERPRINT_AFTER
+          { countBefore: 1,  countAfter: 23,
+            sumBefore: 43,   sumAfter: 35549780074418,
+            dirChanged: true }
+22:32:35  PI_SESSION_RESULT
+          { ok: true, errorMessage: null,
+            confabulation: false, resultSubtype: "success" }
+22:32:35  RUNNER_DONE_EVENT
+          { outcome: "success" }
+22:32:35  FINALIZE_SESSION_COMPLETE
+          { outcome: "success",
+            finalSessionStatus: "completed",
+            finalFeatureStatus: "completed" }
+```
+
+**What this proves end-to-end:**
+
+1. The idle-check timer correctly observed `lastBashEndAt` from the
+   `tool_execution_end` events and only fired once 60 s elapsed since
+   the last bash AND the fingerprint hadn't moved.
+2. `session.abort()` cleanly returned with `resultSubtype: "aborted"`
+   and `errorMessage: "Request was aborted."` — the expected Pi
+   behaviour for a programmatic abort.
+3. The result-override cleared both fields so the regular
+   `ok`-computation saw a clean success.
+4. The fs-fingerprint guard (ENH-001 layer 2) then ran on the real
+   data: 23 files appeared, `dirChanged: true` → guard passed →
+   `ok: true` → feature marked completed.
+5. Total session time: 300_163 ms (exactly 5 min by codingMs) vs the
+   30-min watchdog. Recovered ~25 min of compute and gave the user
+   credit for completed work — exactly the headline win condition.
+
+The auto-continue handler immediately spawned session 666 for
+feature #75 (db-setup) with no orchestrator state corruption.
+
+**Confabulation-rejection path also verified** in earlier sessions
+(660, 663) where the agent never invoked bash and the fingerprint
+stayed unchanged: idle-stop fires → override clears errorMessage →
+fingerprint guard correctly sees `dirChanged: false` → confabulation
+rejection still wins → feature demoted. Idle-stop does NOT bypass
+the safety check; it only saves wall time on the rejection path too.
 
 ---
 
@@ -970,12 +1060,16 @@ failure.)
 - [x] ENH-004 (first iteration): Clear button on Completed column
       (typecheck + lint clean; behavior pending live verification — test
       using DreamForgeIdeas after the next agent run completes)
-- [ ] ENH-007: idle-stop heuristic terminates sessions early when no fs
-      change AND no bash for 5 min — implementation passes typecheck +
-      lint; live re-test pending (run the same `gpt-oss:20b` scaffold
-      scenario that originally surfaced the failure and confirm the
-      runner self-terminates within ~5 min of the last fs change instead
-      of hitting the 30-min watchdog)
+- [x] ENH-007: idle-stop heuristic terminates sessions early when no fs
+      change AND no bash for the configured threshold — verified live
+      2026-04-29 with `gpt-oss:20b` and `LOCALFORGE_IDLE_STOP_MS=60000`.
+      Session 665 ran ~5 min total: bash created 23 files, agent then
+      idled, idle-stop fired at the 60-s mark, override cleared the
+      `aborted` result, fingerprint guard saw `dirChanged: true` and
+      passed, feature marked completed. Auto-continue picked up #75
+      cleanly. Earlier sessions (660, 663) also exercised the
+      "confabulation-rejection" path: idle-stop fires, override runs,
+      fingerprint guard correctly demotes the no-fs-change session.
 - [ ] No regressions on the kanban DnD, Save flow, Delete flow, dependency edit
       (manual smoke pass before commit)
 

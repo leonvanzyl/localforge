@@ -711,9 +711,31 @@ function isPermanentError(errorMessage) {
     "unauthorized",
     "401",
     "403",
+    // Resource-exhaustion errors. Retrying immediately won't help — the user
+    // has to free RAM (close apps, stop other Ollama models) or switch to a
+    // smaller model. Once they fix it and click Start again the blocklist
+    // clears, so the trade-off is the same as the tool-support patterns.
+    "requires more system memory",
+    "out of memory",
+    "cuda out of memory",
   ];
   const lower = errorMessage.toLowerCase();
   return permanentPatterns.some((p) => lower.includes(p.toLowerCase()));
+}
+
+// Sub-classifier for the permanent-error guidance message. Two distinct
+// failure shapes today and they need different remediation copy:
+//   - tool-call incompatibility → switch to a model that supports tools
+//   - resource exhaustion       → free RAM or pick a smaller model
+function isMemoryExhaustionError(errorMessage) {
+  if (!errorMessage) return false;
+  const patterns = [
+    "requires more system memory",
+    "out of memory",
+    "cuda out of memory",
+  ];
+  const lower = errorMessage.toLowerCase();
+  return patterns.some((p) => lower.includes(p));
 }
 
 function sleep(ms) {
@@ -1258,10 +1280,10 @@ async function main() {
         "error",
       );
       if (permanent) {
-        emitLog(
-          `This error will not resolve on retry — the configured model "${model}" is incompatible with the agent (e.g. lacks tool-call support). Switch to a tool-capable model in settings (try llama3.2, qwen2.5-coder, or mistral-nemo on Ollama) and click Start again.`,
-          "error",
-        );
+        const guidance = isMemoryExhaustionError(result?.errorMessage)
+          ? `This error will not resolve on retry — loading the model "${model}" needs more memory than is currently free. Close other heavy apps (browsers with many tabs, IDEs, other model servers), or run \`ollama stop <other-model>\` if a different model is loaded, or pick a smaller model in settings. Then click Start again.`
+          : `This error will not resolve on retry — the configured model "${model}" is incompatible with the agent (e.g. lacks tool-call support). Switch to a tool-capable model in settings (try llama3.2, qwen2.5-coder, or mistral-nemo on Ollama) and click Start again.`;
+        emitLog(guidance, "error");
       }
       emit({
         type: "done",
