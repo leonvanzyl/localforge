@@ -11,6 +11,63 @@ enhancements — not yet implemented).
 
 ---
 
+## 2026-04-29 verification session — final summary
+
+This branch was built and verified across multiple live runs against the
+DreamForgeIdeas example backlog using three different Ollama models
+(`gemma3:4b`, `llama3.2:latest`, `qwen2.5-coder:32b`, `qwen2.5-coder:7b`,
+`gpt-oss:20b`). Findings are documented per-bug below; the headline is:
+
+**Harness side — green light.** Every fix in this PR demonstrably works:
+
+- BUG-001 caught `gemma3:4b`'s "does not support tools" error on first
+  attempt, paused the feature, blocklisted it, no retry storm.
+- BUG-002 made the feature-detail dialog smooth to type in during live
+  agent runs (verified with active SSE traffic).
+- BUG-003 added an accessible name to the dependency picker.
+- ENH-001 caught three confabulation patterns across two model sizes:
+  zero-tool-call, single-probing-tool-call, and read-only sessions on
+  multi-step features. After 2 confabulations on the same feature the
+  orchestrator blocklists it instead of looping forever — verified live.
+- ENH-004 (first iteration) ships a per-column Clear button on the
+  Completed column.
+- ENH-006 surfaces the effective model on the top bar with auto-refresh
+  on settings save.
+- CHORE-001 fixed `npm run lint` (Next 16 removed `next lint`).
+
+**Model side — known limitation.** None of the locally-runnable models
+tested completed the full DreamForgeIdeas backlog. The honest summary:
+
+- Models without tool support (`gemma3:*`) cannot drive the agent at all.
+- Small/mid code models on Ollama (`qwen2.5-coder:7b`, `llama3.2:latest`)
+  emit JSON-shaped tool calls as plain assistant text — Ollama's
+  OpenAI-compat shim does not parse these into structured `tool_calls`,
+  so Pi sees zero tool calls. Confirmed via direct curl: only
+  `gpt-oss:20b` returns structured tool_calls correctly.
+- `gpt-oss:20b` runs the scaffold step legitimately (real `bash` →
+  `npx create-next-app .` → real files on disk), but on multi-step
+  features (db-setup, layout) it reads existing files and "claims done"
+  without ever invoking Write/Edit. Even with a prescriptive system
+  prompt + per-feature spec listing exact filenames, the model does not
+  follow through on incremental writes.
+- After the scaffold step, `gpt-oss:20b` also exhibits a "no-op tool
+  loop" pattern — calling hallucinated tool names (`feature_get_ready`,
+  `assistant`) and repeated `Read package.json` until the 30-min
+  watchdog kills the session. This is documented as ENH-007.
+
+**Bottom line for upstream PR:** the harness no longer fakes
+completions, no longer infinite-loops, no longer claims success on
+empty project directories. It honestly reports what the local model
+can and cannot do. Whether a given user can complete a backlog with
+the harness is downstream of their model choice — a problem the
+README's new "Model selection" section now explains explicitly.
+
+ENH-007 (idle-stop heuristic), ENH-002, ENH-003, ENH-005 and the
+broader iteration of ENH-004 are tracked here for future PRs and not
+part of this contribution.
+
+---
+
 ## BUG-001 — Tool-incompatible model causes infinite retry/demote loop
 
 **Status:** VERIFIED (2026-04-29 live run on DreamForgeIdeas)
