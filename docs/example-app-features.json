@@ -1,0 +1,95 @@
+{
+  "_comment": "Atomic backlog for the DreamForgeIdeas example app. See example-app-requirements.md for the full spec. Use scripts/load-example-features.mjs to insert these into a project's backlog.",
+  "features": [
+    {
+      "key": "scaffold",
+      "title": "Scaffold Next.js app",
+      "category": "functional",
+      "description": "Initialize a Next.js 15 App Router project at H:\\DreamForgeIdeas with TypeScript and Tailwind. Confirm `npm run dev` starts on port 3000 and serves the default page.",
+      "acceptanceCriteria": "- package.json lists next, react, react-dom, tailwindcss\n- app/page.tsx and app/layout.tsx exist\n- npm run dev listens on http://localhost:3000\n- Visiting http://localhost:3000 returns 200 with the default Next.js content",
+      "priority": 1,
+      "dependsOn": []
+    },
+    {
+      "key": "db-setup",
+      "title": "Add SQLite and Drizzle ORM",
+      "category": "functional",
+      "description": "Install better-sqlite3, drizzle-orm, drizzle-kit. Create lib/db.ts that opens data.sqlite in the project root and exports a Drizzle `db` instance. Create drizzle.config.ts pointing at lib/schema.ts and ./drizzle for migrations.",
+      "acceptanceCriteria": "- lib/db.ts exports a `db` Drizzle instance backed by better-sqlite3\n- drizzle.config.ts references ./lib/schema.ts and ./drizzle\n- `npx drizzle-kit generate` runs without error (even with an empty schema)",
+      "priority": 2,
+      "dependsOn": ["scaffold"]
+    },
+    {
+      "key": "schema",
+      "title": "Define ideas schema and migrate",
+      "category": "functional",
+      "description": "Write the ideas table schema in lib/schema.ts with columns: id (integer PK autoincrement), name (text not null), description (text nullable), status (text not null default 'idea'), githubUrl (text nullable), localRepoPath (text nullable), productionUrl (text nullable), marketSector (text nullable), progressPercent (integer not null default 0), createdAt (text not null default CURRENT_TIMESTAMP), updatedAt (text not null). Generate and apply the migration.",
+      "acceptanceCriteria": "- data.sqlite exists in the project root after migrate\n- The ideas table has all 11 columns with correct types and defaults\n- A no-op `drizzle-kit generate` afterwards reports no schema changes",
+      "priority": 3,
+      "dependsOn": ["db-setup"]
+    },
+    {
+      "key": "api-list-create",
+      "title": "List and create ideas API",
+      "category": "functional",
+      "description": "Add app/api/ideas/route.ts exporting GET (returns { ideas: Idea[] }) and POST (inserts from the JSON body and returns the inserted row). POST must validate that `name` is a non-empty string and default status='idea', progressPercent=0 if not provided.",
+      "acceptanceCriteria": "- GET /api/ideas returns { ideas: [] } on a fresh DB\n- POST /api/ideas with {\"name\":\"x\"} returns 201 with the row including id, status='idea', progressPercent=0\n- POST without name (or with empty name) returns 400\n- After a successful POST, GET returns the row",
+      "priority": 4,
+      "dependsOn": ["schema"]
+    },
+    {
+      "key": "api-update-delete",
+      "title": "Update and delete ideas API",
+      "category": "functional",
+      "description": "Add app/api/ideas/[id]/route.ts exporting PATCH (partial update — only update fields present in the body) and DELETE. Both must return 404 when the id does not exist. PATCH must refresh updatedAt.",
+      "acceptanceCriteria": "- PATCH /api/ideas/{id} with {\"progressPercent\":50} updates only that field and returns the new row\n- PATCH on a nonexistent id returns 404\n- DELETE /api/ideas/{id} returns { success: true } and the row no longer appears in GET /api/ideas\n- DELETE on a nonexistent id returns 404",
+      "priority": 5,
+      "dependsOn": ["api-list-create"]
+    },
+    {
+      "key": "layout",
+      "title": "Layout shell with sidebar",
+      "category": "functional",
+      "description": "Edit app/layout.tsx to render a flex container with a ~240px left sidebar (beige background) and a main content area on the right. Sidebar shows two styled buttons: 'Add New Idea' and 'View All Ideas'. Buttons have no click handlers yet — this is the visual shell only. Use Tailwind classes; main background bg-stone-50, sidebar bg-stone-100.",
+      "acceptanceCriteria": "- Sidebar is visible on every route at a fixed ~240px width\n- 'Add New Idea' and 'View All Ideas' buttons are styled, focusable, and present (inert is fine for now)\n- Main background is bg-stone-50, sidebar is bg-stone-100 (or similar soft beige tones)",
+      "priority": 6,
+      "dependsOn": ["scaffold"]
+    },
+    {
+      "key": "table",
+      "title": "Ideas table UI",
+      "category": "functional",
+      "description": "Make app/page.tsx a client component that fetches /api/ideas on mount and renders a table with columns: name, status, marketSector, progressPercent, githubUrl, productionUrl. URLs render as clickable links opening in a new tab. Progress shown as `42%`. Show 'No ideas yet' when the list is empty.",
+      "acceptanceCriteria": "- With an empty DB, the page shows the empty state 'No ideas yet'\n- After inserting a row via curl POST, refreshing the page shows it in the table\n- githubUrl and productionUrl columns render <a target='_blank' rel='noreferrer'> when set\n- progressPercent renders with a % suffix",
+      "priority": 7,
+      "dependsOn": ["api-list-create", "layout"]
+    },
+    {
+      "key": "add-modal",
+      "title": "Add idea modal",
+      "category": "functional",
+      "description": "Wire the sidebar 'Add New Idea' button to open a modal with a form covering all 8 user-editable fields (name, description as textarea, status as select with idea/building/launched, githubUrl, localRepoPath, productionUrl, marketSector, progressPercent as number 0-100). On submit, POST to /api/ideas and refresh the table without a full page reload. ESC or a close button dismisses the modal.",
+      "acceptanceCriteria": "- Clicking 'Add New Idea' opens the modal\n- ESC dismisses the modal; close button dismisses the modal\n- Submitting with a name value adds a row to the table without a full page reload\n- Required field validation: submitting without name shows an inline error",
+      "priority": 8,
+      "dependsOn": ["table"]
+    },
+    {
+      "key": "edit-delete",
+      "title": "Inline edit and delete",
+      "category": "functional",
+      "description": "Add an actions column to the table with Edit and Delete buttons per row. Edit reuses the AddIdeaModal pre-populated with the row's current values, calling PATCH on save. Delete uses window.confirm('Delete this idea?') and calls DELETE on confirmation.",
+      "acceptanceCriteria": "- Edit modal is pre-populated with the row's current values\n- Saving via Edit issues a PATCH and the row in the table reflects the new values without a full page reload\n- Delete prompts for confirmation; cancelling does nothing\n- Confirming Delete issues a DELETE and the row disappears from the table",
+      "priority": 9,
+      "dependsOn": ["add-modal", "api-update-delete"]
+    },
+    {
+      "key": "sort-search",
+      "title": "Sortable columns and search",
+      "category": "functional",
+      "description": "Make the name, status, marketSector, and progressPercent columns sortable. Clicking a header toggles asc/desc and shows an indicator arrow (▲ or ▼) on the active column. Add a search input above the table that filters rows by name or marketSector (case-insensitive substring) before sorting is applied.",
+      "acceptanceCriteria": "- Clicking a sortable header toggles asc → desc → asc and shows ▲ or ▼ on the active column\n- Typing in the search input filters rows in real time (no submit needed)\n- Search and sort compose correctly: searching then sorting keeps the filter active\n- Non-sortable columns (URLs) do not show a sort indicator",
+      "priority": 10,
+      "dependsOn": ["edit-delete"]
+    }
+  ]
+}
