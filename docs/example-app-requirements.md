@@ -17,7 +17,10 @@ the LocalForge backlog API, plus the dependency wiring.
 A basic single-user Next.js app for tracking SaaS app ideas. Runs locally
 on port 3000, persists to a local SQLite file, no auth.
 
-**Local path:** `H:\DreamForgeIdeas`
+**Local path:** managed by LocalForge — the agent's working directory IS
+the project root (e.g. `H:\localforge\projects\dreamforgeideas-2`). The
+agent must never `cd` elsewhere or write to absolute paths outside that
+cwd; the workspace guard will block any such attempt.
 
 ---
 
@@ -120,8 +123,10 @@ eligible for pickup.
 ```
 
 ### 1. Scaffold Next.js app
-Initialize a Next.js 15 App Router project at `H:\DreamForgeIdeas` with
-TypeScript and Tailwind. Confirm `npm run dev` starts on port 3000.
+Initialize a Next.js 15 App Router project IN THE CURRENT WORKING
+DIRECTORY (the agent's cwd IS the project root) with TypeScript and
+Tailwind. Use `npx create-next-app@latest .` so the scaffold lands
+directly in cwd. Confirm `npm run dev` starts on port 3000.
 
 **Acceptance:**
 - `package.json` lists `next`, `react`, `react-dom`, `tailwindcss`

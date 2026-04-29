@@ -5,7 +5,7 @@
       "key": "scaffold",
       "title": "Scaffold Next.js app",
       "category": "functional",
-      "description": "Initialize a Next.js 15 App Router project at H:\\DreamForgeIdeas with TypeScript and Tailwind. Confirm `npm run dev` starts on port 3000 and serves the default page.",
+      "description": "Initialize a Next.js 15 App Router project IN THE CURRENT WORKING DIRECTORY (your shell cwd IS the project root — do NOT cd elsewhere, do NOT use absolute paths). Use TypeScript and Tailwind. Run `npx create-next-app@latest .` so the scaffold lands directly in cwd. Confirm `npm run dev` starts on port 3000 and serves the default page.",
       "acceptanceCriteria": "- package.json lists next, react, react-dom, tailwindcss\n- app/page.tsx and app/layout.tsx exist\n- npm run dev listens on http://localhost:3000\n- Visiting http://localhost:3000 returns 200 with the default Next.js content",
       "priority": 1,
       "dependsOn": []
