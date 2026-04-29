@@ -283,27 +283,33 @@ server-side. Currently no instrumentation distinguishes these.
 
 ---
 
-## ENH-001 — Treat `tool_calls === 0` as failure, not success
+## ENH-001 — Reject sessions that don't actually do work (defence in depth)
 
-**Status:** IMPLEMENTED (2026-04-29 — added confabulation guard in
-`scripts/agent-runner.mjs`)
+**Status:** IMPLEMENTED — pending live verification of the second layer
+(2026-04-29 first iteration shipped; second iteration in flight after the
+first was found to be insufficient on its own)
 **Reported:** 2026-04-29
-**Severity:** High — upgraded after second confabulation observed with
-`qwen2.5-coder:32b` on Ollama. This is not a small-model-only quirk; it
-hits a much wider population of users than originally thought.
+**Severity:** High — three confabulation events observed across two
+different models (3B and 32B parameter classes) on Ollama. This is not a
+small-model-only quirk; it hits a wide population of users.
 
 ### Symptom
 
-On the 2026-04-29 verification run, **two different models on Ollama
-both produced 10/10 green "completed" toasts with zero file writes**:
+On the 2026-04-29 verification runs, **three Ollama runs produced 10/10
+green "completed" toasts with zero file writes**:
 
-- `llama3.2:3b` (3B params): 19m 02s, 0 tool calls, empty project dir.
+- `llama3.2:3b` (3B params, run 1): 19m 02s, 0 tool calls, empty dir.
 - `qwen2.5-coder:32b` (32B params, CPU-spilled): 45m 21s, 0 tool calls,
-  empty project dir.
+  empty dir.
+- `llama3.2:latest` (run 2, AFTER first ENH-001 iteration shipped):
+  48m 15s, mostly toolCalls=1 per session, **still empty dir**. The
+  first iteration of the guard caught some attempts but not all — the
+  model worked around the floor by making a single benign probing tool
+  call per session.
 
-Both produced the celebration screen and "Project Complete" UI. The
+All three produced the celebration screen and "Project Complete" UI. The
 project working directory `H:\localforge\projects\dreamforgeideas-2`
-contained only the `.pi/` config folder afterwards.
+contained only the `.pi/` config folder afterwards every time.
 
 ### Root cause
 
@@ -345,45 +351,130 @@ Whichever is true, the harness side of the trust contract is the same:
 **zero tool calls is incompatible with marking a filesystem-mutating
 feature complete.**
 
-### Implementation (this PR)
+### Implementation — three layers of defence
 
 In `scripts/agent-runner.mjs:runCodingAgentOnce()`, after the Pi loop
-exits and the initial `ok` is computed, a guard now overrides `ok` to
-`false` and sets a descriptive `errorMessage` whenever
-`toolCalls < LOCALFORGE_MIN_TOOL_CALLS` (default 1). The error message
-explicitly names the likely cause (text-shaped tool calls), warns the
-user that no filesystem changes were made, and recommends alternative
-models. The flag is configurable via `LOCALFORGE_MIN_TOOL_CALLS=0` for
-users who legitimately have research-only features.
+exits and the initial `ok` is computed, two guards now run in order.
+Either one tripping overrides `ok` to `false` and sets a descriptive
+`errorMessage`. The error messages explicitly name the likely cause,
+warn the user that no filesystem changes were made, and recommend
+alternative models.
 
-The downstream classification falls through unchanged: `isPermanentError`
-does not match the new message (correct — the same feature might use
-tools properly on a different attempt), `isTransientError` also does not
-match (correct — retrying the same model is unlikely to help). So the
-runner gives up after the first attempt, the orchestrator demotes the
-feature with the standard backlog priority bump, and the user sees a
-clear UI error telling them to switch models.
+#### Layer 1 — minimum tool-call floor
+
+If `toolCalls < LOCALFORGE_MIN_TOOL_CALLS` (default 1), the session is
+rejected as "claimed success without invoking any tools". Configurable
+via `LOCALFORGE_MIN_TOOL_CALLS=0` for users with research-only features.
+
+This was sufficient for the run-1 confabulation pattern (zero tool calls
+across the entire session) but turned out to miss a sneakier variant
+discovered on run-2: the model makes exactly one probing tool call per
+feature, then confabulates completion. `toolCalls=1` slipped past the
+floor.
+
+#### Layer 2 — workspace-fingerprint check
+
+A new `fingerprintProjectDir()` helper takes a lightweight
+content-fingerprint of the project working directory: count of files
+plus a sum of (path-length + size + mtime-epoch) across each file,
+recursing up to depth 6 with a 10000-entry cap. Skips `.pi/`,
+`node_modules/`, `.git/`, `.next/` (so we don't walk hundreds of MB —
+their existence is still tracked at the parent level).
+
+Snapshots are taken right before the session starts and right after it
+ends. If the fingerprint is unchanged AND `requireFsChanges` is on
+(default; toggle off via `LOCALFORGE_REQUIRE_FS_CHANGES=0`), the
+session is rejected as "claimed success but the project working
+directory is unchanged".
+
+This catches the toolCalls=1-but-nothing-written case without bumping
+the floor (which would just shift the gameable threshold). Together the
+two layers cover both observed confabulation patterns.
+
+#### Layer 3 — orchestrator-side confabulation streak escalation
+
+The two layers above each demote the feature with `permanent=false` so
+a different model (or a transient hiccup) can still recover. But on a
+project whose backlog is a strict dependency chain (every feature
+depends on at least one other), demoting the head feature deadlocks
+the queue: the orchestrator's auto-continue immediately re-picks the
+demoted feature because nothing else is dependency-eligible, the
+session confabulates again, demotes again, and the loop repeats —
+identical in pattern to the BUG-001 retry storm we already fixed for
+genuinely-permanent errors.
+
+The fix lives in `lib/agent/orchestrator.ts`:
+
+- The runner sets `confabulation: true` on its `done` event whenever
+  layer 1 or layer 2 trips.
+- Orchestrator state gains a per-process
+  `confabulationCounts: Map<featureId, number>` alongside the existing
+  `permanentlyBlocked` set.
+- `finalizeSession` increments the counter on each confabulation
+  failure for the affected feature, and resets it on any
+  non-confabulation outcome (real errors → reset, success → reset).
+- When the counter reaches `CONFABULATION_BLOCK_THRESHOLD` (2), the
+  feature is added to `permanentlyBlocked` for the rest of the
+  process — same exit path used for genuine permanent errors. The
+  orchestrator's picker already filters by this set.
+- `startAllAgents` clears both the blocklist and the counter map (the
+  user's explicit Run queue click is the signal that the underlying
+  config may have been fixed).
+
+Two confabulations on the same feature in a row is enough signal — one
+might be a transient hiccup, two means the model + provider + prompt
+combination cannot make progress on this specific feature.
+
+### Downstream behaviour
+
+Layer 1 and Layer 2 set `permanent=false` and `confabulation=true` on
+their first hit. The runner gives up after the first attempt
+(retrying the same model is unlikely to help; `isPermanentError` /
+`isTransientError` don't match the new messages). The orchestrator
+demotes via the standard backlog priority bump, increments the
+confabulation counter, and either lets the auto-continue re-pick the
+feature (count below threshold) or escalates it to the blocklist
+(count at threshold). The user sees a clear UI error explaining the
+situation and naming the recommended remediation.
 
 ### Files changed
 
-- `scripts/agent-runner.mjs` — added `CONFABULATION_GUARD_TRIPPED` debug
-  trace, the `minToolCalls` floor read from env, and the `ok` override.
+- `scripts/agent-runner.mjs`
+  - Added `fingerprintProjectDir()` helper (lightweight recursive
+    file-count + size + mtime sum, with skip list and depth cap).
+  - Snapshots the project dir before the Pi prompt and after it returns.
+  - `WORKSPACE_FINGERPRINT_BEFORE` / `WORKSPACE_FINGERPRINT_AFTER`
+    debug traces.
+  - Two-layer confabulation guard (tool-call floor + fs-change
+    requirement) producing distinct `CONFABULATION_GUARD_TRIPPED`
+    debug entries with the matching `reason`.
+  - Sets `confabulation: true` on the `PI_SESSION_RESULT` and `done`
+    event so the orchestrator can recognise this distinct error class.
+- `lib/agent/orchestrator.ts`
+  - `RunnerDoneLine` now carries an optional `confabulation` flag.
+  - Orchestrator state gains `confabulationCounts: Map<featureId, n>`.
+  - `CONFABULATION_BLOCK_THRESHOLD` constant (default 2).
+  - `finalizeSession` increments the counter on confabulation failures,
+    resets it on any non-confabulation outcome, and adds the feature to
+    `permanentlyBlocked` when the threshold is reached.
+  - `startAllAgents` clears `confabulationCounts` alongside the existing
+    blocklist clear.
 
 ### Manual test plan
 
-1. Configure project to use a model that confabulates on Ollama (e.g.
-   `qwen2.5-coder:32b` with CPU spillover, or `llama3.2:3b`).
+1. Configure project to use a model that confabulates on Ollama
+   (e.g. `qwen2.5-coder:32b` with CPU spillover, or `llama3.2:latest`).
 2. Add a feature whose work requires file writes (the standard
    DreamForgeIdeas backlog works).
 3. Click run queue.
 4. **Expect:** the feature is marked failed (not completed), the agent
-   log shows "Agent claimed success without invoking any tools
-   (toolCalls=0, required>=1). The model likely emitted tool calls as
-   plain text...", and the project working directory is empty.
+   log shows one of the two new error messages depending on whether
+   the model produced 0 tool calls or just made one benign probe.
 5. Switch to a known-good model (`qwen2.5-coder:7b`, `llama3.1:8b`) and
-   verify normal runs are unaffected — real tool calls → still complete.
-6. Set `LOCALFORGE_MIN_TOOL_CALLS=0` in the environment and verify the
-   guard is bypassed (escape hatch for tool-less features).
+   verify normal runs are unaffected — real tool calls + file writes →
+   still complete.
+6. Set `LOCALFORGE_REQUIRE_FS_CHANGES=0` in the environment for a
+   tool-less feature and verify only the layer-1 floor still applies.
 
 ---
 
@@ -670,9 +761,20 @@ panel border color could shift from red ("error") to amber ("warning").
       console returned `'Add a prerequisite feature'`)
 - [x] CHORE-001: `npm run lint` runs without the "Invalid project directory" error
 - [x] `npx tsc --noEmit` is clean
-- [x] ENH-001: confabulation guard rejects sessions with zero tool calls
-      (implementation tested via typecheck + lint; behavior pending live
-      verification on the next run)
+- [x] ENH-001 (layer 1, tool-call floor): rejects sessions with zero tool
+      calls — verified live 2026-04-29; CONFABULATION_GUARD_TRIPPED fired
+      on early `llama3.2:latest` attempts that produced 0 tool calls
+- [x] ENH-001 (layer 2, fs-fingerprint): rejects sessions whose work
+      directory is unchanged — verified live 2026-04-29; multiple
+      CONFABULATION_GUARD_TRIPPED entries with reason="no_fs_changes"
+- [x] ENH-001 (layer 3, streak escalation): after 2 consecutive
+      confabulation failures on the same feature the orchestrator
+      blocklists it — verified live 2026-04-29 with `llama3.2:latest`.
+      Debug log shows two `CONFABULATION_COUNT` entries (count=1 then
+      count=2) on feature #34, followed immediately by
+      `MAYBE_CONTINUE_NO_MORE_FEATURES { filledSlots: 0 }`. Loop
+      stopped cleanly; agents went idle. Pre-fix: same scenario looped
+      indefinitely.
 - [x] ENH-004 (first iteration): Clear button on Completed column
       (typecheck + lint clean; behavior pending live verification — test
       using DreamForgeIdeas after the next agent run completes)

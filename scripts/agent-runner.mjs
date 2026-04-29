@@ -562,6 +562,65 @@ function makeWorkspaceGuardExtension(projectDir, onDenied) {
   };
 }
 
+/**
+ * Take a lightweight content-fingerprint of a project working directory so
+ * we can detect whether an agent session actually produced filesystem
+ * mutations. Skips `.pi/` (LocalForge's own metadata folder) and
+ * `node_modules/` (so we don't walk hundreds of MB; an `npm install` will
+ * still be detected via the existence of the top-level `node_modules` dir
+ * and any package-lock.json / package.json that were created or touched).
+ *
+ * The fingerprint is the sum of (path-length + file-size + mtime-epoch)
+ * across every tracked file, joined with the count. A change in any
+ * tracked file (creation, deletion, content edit, rename) bumps it.
+ *
+ * Capped at 10000 entries so a freak case doesn't tank the run.
+ */
+function fingerprintProjectDir(projectDir) {
+  const SKIP_DIRS = new Set([".pi", "node_modules", ".git", ".next"]);
+  let count = 0;
+  let sum = 0;
+  function walk(dir, depth) {
+    if (depth > 6 || count > 10000) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (count > 10000) return;
+      const name = e.name;
+      const p = path.join(dir, name);
+      if (e.isDirectory()) {
+        // Track presence of skipped directories themselves (their existence
+        // is a meaningful signal — `node_modules` appearing after a session
+        // means `npm install` ran) but don't descend into them.
+        if (SKIP_DIRS.has(name)) {
+          count++;
+          sum += p.length + 1;
+          continue;
+        }
+        walk(p, depth + 1);
+      } else {
+        try {
+          const stat = fs.statSync(p);
+          count++;
+          sum += p.length + stat.size + Math.floor(stat.mtimeMs);
+        } catch {
+          /* deleted between readdir and stat — ignore */
+        }
+      }
+    }
+  }
+  try {
+    walk(projectDir, 0);
+  } catch {
+    /* ignore */
+  }
+  return { count, sum };
+}
+
 function buildUserPrompt(feature) {
   const title = feature.title ?? "";
   const description = feature.description ?? "";
@@ -667,6 +726,19 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
     baseUrl,
     maxTurns: Number.isFinite(maxTurns) && maxTurns > 0 ? maxTurns : 100,
     promptLength: userPrompt.length,
+  });
+
+  // Snapshot the working directory before the session runs so we can detect
+  // whether the agent produced any real filesystem mutations. Counterpart
+  // snapshot is taken after the session ends. Used by the confabulation
+  // guard below — many small models on Ollama emit JSON-shaped tool calls
+  // as plain assistant text, so they can produce non-zero `toolCalls`
+  // (e.g. one probing read) and still write nothing to disk.
+  const dirBefore = fingerprintProjectDir(projectDir);
+  debugLog("WORKSPACE_FINGERPRINT_BEFORE", {
+    projectDir,
+    count: dirBefore.count,
+    sum: dirBefore.sum,
   });
 
   let toolCalls = 0;
@@ -793,43 +865,91 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       resultSubtype === undefined);
 
   // Confabulation guard. Some local-model + provider combinations (observed
-  // with qwen2.5-coder:32b and llama3.2:3b on Ollama via openai-completions)
-  // emit JSON-shaped tool calls as plain assistant text instead of structured
-  // tool_use content blocks. Pi never executes them, toolCalls stays at 0,
-  // but resultSubtype is still "success" — so the orchestrator marks the
-  // feature completed despite zero filesystem mutations. The result is a
-  // 10/10 green-toast project with an empty working directory.
+  // with qwen2.5-coder:32b and llama3.2:latest on Ollama via openai-
+  // completions) emit JSON-shaped tool calls as plain assistant text
+  // instead of structured tool_use content blocks. Pi never executes them,
+  // toolCalls stays at 0 (or, sneakier, stays at 1 from a single benign
+  // probing call), but resultSubtype is still "success" — so the
+  // orchestrator marks the feature completed despite zero filesystem
+  // mutations. The result is a 10/10 green-toast project with an empty
+  // working directory.
   //
-  // Treat any session that ran to a normal "success" with zero tool calls
-  // as a failure. We only override when ok is otherwise true (so we don't
-  // mask a real upstream error), and we leave permanent=false so a retry
-  // with a better-behaved model still has a chance.
+  // We defend in two layers:
+  //
+  //   1. minToolCalls floor (default 1). Catches the trivial all-text
+  //      sessions. Configurable via LOCALFORGE_MIN_TOOL_CALLS.
+  //
+  //   2. Workspace-fingerprint check. Snapshots the project dir before
+  //      and after the session — if no tracked file changed (creation,
+  //      deletion, content, mtime), the agent did no real work. This
+  //      catches the toolCalls=1-but-nothing-written case. Disable via
+  //      LOCALFORGE_REQUIRE_FS_CHANGES=0 if you have a feature that
+  //      genuinely makes no filesystem changes (rare).
+  //
+  // We only override when ok is otherwise true (so we don't mask a real
+  // upstream error), and we leave permanent=false so a retry with a
+  // better-behaved model still has a chance.
   const minToolCalls = Number.parseInt(
     process.env.LOCALFORGE_MIN_TOOL_CALLS ?? "1",
     10,
   );
   const minFloor =
     Number.isFinite(minToolCalls) && minToolCalls >= 0 ? minToolCalls : 1;
+  const dirAfter = fingerprintProjectDir(projectDir);
+  const dirChanged =
+    dirBefore.count !== dirAfter.count || dirBefore.sum !== dirAfter.sum;
+  debugLog("WORKSPACE_FINGERPRINT_AFTER", {
+    countBefore: dirBefore.count,
+    countAfter: dirAfter.count,
+    sumBefore: dirBefore.sum,
+    sumAfter: dirAfter.sum,
+    dirChanged,
+  });
+  const requireFsChanges =
+    (process.env.LOCALFORGE_REQUIRE_FS_CHANGES ?? "1") !== "0";
+
+  let confabulation = false;
   if (ok && toolCalls < minFloor) {
     debugLog("CONFABULATION_GUARD_TRIPPED", {
+      reason: "tool_calls_below_floor",
       toolCalls,
       minFloor,
       lastAssistantTextSnippet: lastAssistantText.slice(0, 200),
     });
     ok = false;
+    confabulation = true;
     errorMessage = `Agent claimed success without invoking any tools (toolCalls=${toolCalls}, required>=${minFloor}). The model likely emitted tool calls as plain text instead of structured tool_use blocks — common with some Ollama + small-model combinations. No filesystem changes were made. Try a different model (qwen2.5-coder:7b or llama3.1:8b are reliable on Ollama), or set LOCALFORGE_MIN_TOOL_CALLS=0 if you have a feature that genuinely requires no tool calls.`;
+  } else if (ok && requireFsChanges && !dirChanged) {
+    debugLog("CONFABULATION_GUARD_TRIPPED", {
+      reason: "no_fs_changes",
+      toolCalls,
+      countBefore: dirBefore.count,
+      countAfter: dirAfter.count,
+      lastAssistantTextSnippet: lastAssistantText.slice(0, 200),
+    });
+    ok = false;
+    confabulation = true;
+    errorMessage = `Agent claimed success but the project working directory is unchanged (toolCalls=${toolCalls}, fingerprint stable). The session likely made one or two probing tool calls and then confabulated completion without writing or modifying any files. Try a different model (qwen2.5-coder:7b or llama3.1:8b are reliable on Ollama), or set LOCALFORGE_REQUIRE_FS_CHANGES=0 if this feature genuinely makes no filesystem changes.`;
   }
 
   debugLog("PI_SESSION_RESULT", {
     ok,
     errorMessage,
+    confabulation,
     resultSubtype,
     toolCalls,
     messageCount,
     lastAssistantTextSnippet: lastAssistantText.slice(0, 200),
   });
 
-  return { ok, toolCalls, lastAssistantText, resultSubtype, errorMessage };
+  return {
+    ok,
+    toolCalls,
+    lastAssistantText,
+    resultSubtype,
+    errorMessage,
+    confabulation,
+  };
 }
 
 async function runCodingAgent(params) {
@@ -987,9 +1107,11 @@ async function main() {
 
     if (!result || !result.ok) {
       const permanent = Boolean(result?.permanent);
+      const confabulation = Boolean(result?.confabulation);
       debugLog("OUTCOME_FAILURE_FROM_PI", {
         reason: result?.errorMessage ?? result?.resultSubtype,
         permanent,
+        confabulation,
       });
       emitLog(
         `Agent session ended without success (${codingMs}ms, ${
@@ -1010,9 +1132,15 @@ async function main() {
         outcome: "failure",
         reason: result?.errorMessage ?? `result ${result?.resultSubtype ?? "unknown"}`,
         permanent,
+        confabulation,
       });
       doneEmitted = true;
-      debugLog("DONE_EMITTED", { outcome: "failure", phase: "pi", permanent });
+      debugLog("DONE_EMITTED", {
+        outcome: "failure",
+        phase: "pi",
+        permanent,
+        confabulation,
+      });
       process.stdout.write("", () => process.exit(1));
       return;
     }

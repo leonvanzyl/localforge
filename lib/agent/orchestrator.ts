@@ -173,7 +173,27 @@ type OrchestratorState = {
    * config.
    */
   permanentlyBlocked: Set<number>;
+  /**
+   * Per-process count of consecutive confabulation failures keyed by
+   * feature id. When the count crosses CONFABULATION_BLOCK_THRESHOLD the
+   * feature is added to `permanentlyBlocked` so the orchestrator stops
+   * burning cycles on a model + feature combination that has already
+   * proven it can't make progress. Reset implicitly by process restart
+   * or by an explicit `startAllAgents` call (the same lever that clears
+   * the blocklist).
+   */
+  confabulationCounts: Map<number, number>;
 };
+
+/**
+ * After this many consecutive confabulation failures on the same feature,
+ * the orchestrator escalates that feature to the permanently-blocked set
+ * (same path used by genuinely permanent errors like
+ * `does not support tools`). Two is enough: one confabulation might be a
+ * model hiccup, but two in a row on the same input strongly suggests the
+ * model + provider + prompt combination cannot make progress.
+ */
+const CONFABULATION_BLOCK_THRESHOLD = 2;
 
 // Hot-reload safe singleton. Next.js dev mode will clear this module's
 // exports whenever the file changes, but child processes + subscribers are
@@ -188,14 +208,22 @@ function getState(): OrchestratorState {
       running: new Map(),
       events: new EventEmitter(),
       permanentlyBlocked: new Set<number>(),
+      confabulationCounts: new Map<number, number>(),
     };
     // EventEmitter defaults to 10 listeners; SSE connections can stack up
     // during development hot reloads so raise the cap.
     g[GLOBAL_KEY].events.setMaxListeners(50);
-  } else if (!g[GLOBAL_KEY].permanentlyBlocked) {
+  } else {
     // Hot-reload backfill: an older state object stashed by a previous
-    // version of this module won't have the blocklist. Initialise it.
-    g[GLOBAL_KEY].permanentlyBlocked = new Set<number>();
+    // version of this module won't have these fields. Initialise them
+    // lazily so a long-running dev session that hot-reloaded the module
+    // doesn't end up with `undefined` collections.
+    if (!g[GLOBAL_KEY].permanentlyBlocked) {
+      g[GLOBAL_KEY].permanentlyBlocked = new Set<number>();
+    }
+    if (!g[GLOBAL_KEY].confabulationCounts) {
+      g[GLOBAL_KEY].confabulationCounts = new Map<number, number>();
+    }
   }
   return g[GLOBAL_KEY];
 }
@@ -716,6 +744,16 @@ type RunnerDoneLine = {
    * tokens demoting + re-picking the same feature forever.
    */
   permanent?: boolean;
+  /**
+   * Set by the runner when the session was rejected by the confabulation
+   * guard (the model claimed success but produced no tool calls or no
+   * filesystem changes). Distinct from `permanent` because the same model
+   * might behave correctly on a different feature — but if a single feature
+   * confabulates repeatedly, the orchestrator escalates it to the
+   * permanently-blocked set so the dependency chain doesn't deadlock the
+   * queue in an infinite demote-and-repick loop.
+   */
+  confabulation?: boolean;
 };
 type RunnerLine = RunnerLogLine | RunnerDoneLine;
 
@@ -776,11 +814,15 @@ function handleRunnerLine(rs: RunningSession, raw: string): void {
       outcome,
       reason: done.reason,
       permanent: done.permanent,
+      confabulation: done.confabulation,
     });
     finalizeSession(
       rs,
       outcome === "success" ? "success" : "failed",
-      { permanent: Boolean(done.permanent) },
+      {
+        permanent: Boolean(done.permanent),
+        confabulation: Boolean(done.confabulation),
+      },
     );
   }
 }
@@ -802,15 +844,17 @@ function normaliseMessageType(raw: unknown): AgentMessageType {
 function finalizeSession(
   rs: RunningSession,
   outcome: "success" | "failed" | "terminated",
-  options: { permanent?: boolean } = {},
+  options: { permanent?: boolean; confabulation?: boolean } = {},
 ): void {
   const permanent = Boolean(options.permanent);
+  const confabulation = Boolean(options.confabulation);
   debugLog("FINALIZE_SESSION_CALLED", {
     sessionId: rs.session.id,
     featureId: rs.feature.id,
     featureTitle: rs.feature.title,
     outcome,
     permanent,
+    confabulation,
     inRunningMap: getState().running.has(rs.session.id),
   });
 
@@ -840,6 +884,9 @@ function finalizeSession(
   if (outcome === "success") {
     finalSessionStatus = "completed";
     finalFeature = updateFeature(rs.feature.id, { status: "completed" });
+    // Reset any pending confabulation streak — defensive, since a completed
+    // feature won't be re-picked, but keeps the counter map tidy.
+    getState().confabulationCounts.delete(rs.feature.id);
     const log = appendAgentLog({
       sessionId: rs.session.id,
       featureId: rs.feature.id,
@@ -860,22 +907,56 @@ function finalizeSession(
     finalSessionStatus = "failed";
     const demoted = demoteFeatureToBacklog(rs.feature.id);
     finalFeature = demoted;
-    if (permanent) {
+
+    // Track confabulation streaks per feature. The runner sets
+    // `confabulation: true` on its done event when the agent claimed
+    // success but produced no tool calls or no filesystem changes. A
+    // single confabulation might be a model hiccup; CONFABULATION_BLOCK_
+    // THRESHOLD in a row on the same feature is a loud signal that this
+    // model + provider + prompt combination cannot make progress, and
+    // re-picking will just deadlock the queue (every dependant feature is
+    // blocked behind this one).
+    let escalatedDueToConfabulation = false;
+    if (confabulation) {
+      const prev = getState().confabulationCounts.get(rs.feature.id) ?? 0;
+      const next = prev + 1;
+      getState().confabulationCounts.set(rs.feature.id, next);
+      debugLog("CONFABULATION_COUNT", {
+        featureId: rs.feature.id,
+        count: next,
+        threshold: CONFABULATION_BLOCK_THRESHOLD,
+      });
+      if (next >= CONFABULATION_BLOCK_THRESHOLD) {
+        escalatedDueToConfabulation = true;
+      }
+    } else {
+      // Any non-confabulation outcome resets the streak — the model is at
+      // least trying things, so a future attempt on this feature might
+      // succeed.
+      getState().confabulationCounts.delete(rs.feature.id);
+    }
+
+    if (permanent || escalatedDueToConfabulation) {
       // Record the feature so auto-continue and start-all skip it for the
       // rest of this process. Without this, the orchestrator would re-pick
       // the same feature seconds later and fail again with the same error,
       // burning through the kanban without making progress.
       getState().permanentlyBlocked.add(rs.feature.id);
     }
+
     const baseMsg = demoted
       ? `Feature "${rs.feature.title}" demoted back to backlog (priority ${demoted.priority})`
       : `Feature "${rs.feature.title}" returned to backlog`;
+    let logMessage = baseMsg;
+    if (permanent) {
+      logMessage = `${baseMsg} — paused until next restart due to a model-incompatibility error. Fix the model in settings, then click Start.`;
+    } else if (escalatedDueToConfabulation) {
+      logMessage = `${baseMsg} — paused until next Start after ${CONFABULATION_BLOCK_THRESHOLD} consecutive confabulations. The agent keeps claiming success without doing real work. Switch to a more capable model (try qwen2.5-coder:7b or llama3.1:8b on Ollama), then click Start.`;
+    }
     const log = appendAgentLog({
       sessionId: rs.session.id,
       featureId: rs.feature.id,
-      message: permanent
-        ? `${baseMsg} — paused until next restart due to a model-incompatibility error. Fix the model in settings, then click Start.`
-        : baseMsg,
+      message: logMessage,
       messageType: "error",
     });
     broadcast({
@@ -1055,6 +1136,12 @@ export function startAllAgents(projectId: number): StartResult[] {
       cleared: Array.from(getState().permanentlyBlocked),
     });
     getState().permanentlyBlocked.clear();
+  }
+  if (getState().confabulationCounts.size > 0) {
+    debugLog("START_ALL_AGENTS_CLEARING_CONFABULATION_COUNTS", {
+      cleared: Array.from(getState().confabulationCounts.entries()),
+    });
+    getState().confabulationCounts.clear();
   }
 
   debugLog("START_ALL_AGENTS", { projectId, runningCount, slotsAvailable });
