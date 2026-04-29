@@ -379,6 +379,13 @@ function buildCodingSystemPrompt(projectDir, additionalInstructions, devServerPo
 You have been handed ONE backlog feature for a local project. Implement it
 end-to-end using the tools available (read, write, edit, bash, grep, find, ls).
 
+THE MOST IMPORTANT RULE: a feature is NOT complete until you have actually
+WRITTEN or EDITED files on disk. Reading, listing, searching, and finding are
+preparation; they are not implementation. If your tool-call history for this
+session contains zero Write/Edit/Bash invocations, you have NOT done the work
+— do not summarise or claim success. The harness will detect this and reject
+the session.
+
 THE WORKSPACE IS ${projectDir}
 This is your cwd and the ONLY directory you may modify. Every path you pass
 to Write/Edit must resolve inside ${projectDir}. Use relative paths when you
@@ -387,18 +394,26 @@ commands must not cd out of this directory or touch files above it. Writes
 to ancestor directories will be refused by the runtime.
 
 Workflow:
-1. Read any existing source files you need to understand context (package.json,
-   the app entry point, relevant modules).
-2. Implement the feature — create/modify real source files, wire up routes,
-   update schemas, etc. Do NOT stub, mock, or leave TODOs.
+1. Read existing source files you need to understand context (package.json,
+   the app entry point, relevant modules). Keep this phase short — the goal
+   is implementation, not exhaustive analysis.
+2. IMPLEMENT THE FEATURE — call Write to create new files, Edit to change
+   existing ones, Bash to run install / migration / build commands. Multi-
+   step features need MULTIPLE write/edit/bash calls; one read followed by a
+   summary is incomplete.
 3. Run the project's type-check / build / tests with Bash if they exist. Fix
    any failures you introduce before finishing.
-4. When you are confident the feature works, STOP calling tools and reply with
-   a short sentence summarising what you changed.
+4. SELF-CHECK before stopping: count the Write/Edit/Bash calls you have made
+   this session. If the count is zero AND the feature description asks for
+   file changes (almost every feature does), you are NOT done. Go back to
+   step 2 and actually implement.
+5. When the feature legitimately works, STOP calling tools and reply with a
+   short sentence listing the files you created/modified.
 
 Rules:
 - Every change must actually modify a file on disk. Describing the change in
-  prose does not count as implementing it.
+  prose, or in an assistant message, or in a "plan" — none of those count.
+  Only Write/Edit/Bash count.
 - Prefer small, focused edits to existing files over creating new scaffolding.
 - Do NOT ask the user questions. Make reasonable assumptions and note them
   in your final reply.
