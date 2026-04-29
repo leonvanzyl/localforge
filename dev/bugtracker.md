@@ -751,6 +751,109 @@ panel border color could shift from red ("error") to amber ("warning").
 
 ---
 
+## ENH-007 — Idle-stop heuristic for sessions that won't terminate
+
+**Status:** PROPOSED (not yet implemented)
+**Reported:** 2026-04-29
+**Severity:** Medium (sessions can burn the full 30-minute watchdog
+budget on no-op tool calls after they've actually finished the work,
+losing credit for completed features that get returned to backlog
+instead of marked completed)
+
+### Symptom
+
+Live verification with `gpt-oss:20b` on Ollama — second iteration with
+the prescriptive spec — produced a new failure mode the existing guards
+do not catch.
+
+Timeline of session 655 (feature #54 "Scaffold Next.js app"):
+
+```text
+18:39 - session starts
+18:40 - agent runs `npx create-next-app@latest .` via bash
+18:40-18:42 - real files appear on disk (~13 files, full Next.js scaffold)
+18:42-19:09 - agent makes 27 minutes of no-op tool calls:
+              - hallucinated tools like `feature_get_ready` and `assistant`
+              - repeated `Reading package.json`, `Listing files`, `Reading app/page.tsx`
+              - `Finding *.feature` looking for cucumber-style files that don't exist
+19:09 - SESSION_TIMEOUT_MS (30 min) hits, watchdog kills the runner
+19:09 - finalizeSession sees outcome="terminated" → feature goes back to backlog (not completed)
+```
+
+The agent did the actual work in the first 3 minutes and then spent the
+remaining 27 minutes doing useless reads/searches before the watchdog
+forcibly terminated. The terminated outcome demoted the feature to
+backlog despite the work being legitimately done — wasting the next 30
+minutes' worth of compute, AND losing credit for completed work.
+
+This is distinct from confabulation: the fingerprint guard is happy
+(real files exist), the tool-call floor is satisfied (real bash ran),
+but the agent never explicitly declares done. With smaller models that
+don't reliably stop after success, this pattern likely recurs.
+
+### Proposed fix
+
+Add an "idle-stop" heuristic to `scripts/agent-runner.mjs` that runs in
+parallel with the existing 30-minute watchdog:
+
+1. Periodically (e.g. every 30 s) re-fingerprint the project working
+   directory.
+2. Track a `lastFsChangeAt` timestamp updated whenever the fingerprint
+   changes (counterpart to the existing before/after snapshots — but
+   sampled mid-session, not just at the boundaries).
+3. Track a `lastBashAt` timestamp updated on each `tool_execution_end`
+   for `bash`.
+4. If `Date.now() - max(lastFsChangeAt, lastBashAt) > LOCALFORGE_IDLE_STOP_MS`
+   (default 5 minutes), gracefully terminate the runner BUT mark the
+   outcome as "success" — the work is done, the agent just doesn't
+   know how to stop.
+
+Configurable threshold:
+
+- `LOCALFORGE_IDLE_STOP_MS` (default 300_000) — milliseconds of zero
+  fs change AND zero bash activity before the runner forces a graceful
+  stop and reports success.
+- Set to `0` to disable (preserve current behaviour for users who want
+  the watchdog to be the only stop signal).
+
+The "graceful stop with success" outcome is critical: the work IS done,
+we just need the agent to stop. Marking the feature completed at this
+point honours the actual work performed.
+
+### Files that would change
+
+- `scripts/agent-runner.mjs`
+  - Add periodic fingerprint sampler (uses existing
+    `fingerprintProjectDir()` helper).
+  - Add `lastBashAt` tracking via the existing PI_TOOL_USE event hook
+    when `name === "bash"`.
+  - Schedule a check every ~30s; on idle-threshold cross, call
+    `session.cancel()` (or equivalent) and emit a final
+    `done/outcome:success` event with a `reason: "idle_stop"` field.
+  - Emit a clear `IDLE_STOP_TRIGGERED` debug log entry.
+- `lib/agent/orchestrator.ts`
+  - Optionally: surface `reason: "idle_stop"` in the agent log so
+    users see "Session ended early after N minutes of no activity"
+    instead of just "Feature marked completed".
+- `dev/bugtracker.md` — flip status from PROPOSED to IMPLEMENTED on
+  ship.
+
+### Manual test plan
+
+1. Configure a small model that tends to hallucinate post-success
+   (e.g. `gpt-oss:20b`).
+2. Reset the project directory and feature backlog.
+3. Click run queue.
+4. **Expect:** scaffold completes within ~3-5 minutes; agent then
+   keeps making no-op reads. After
+   `LOCALFORGE_IDLE_STOP_MS` (default 5 min) of no fs change AND no
+   bash activity, the runner self-terminates and reports
+   `outcome: "success"`. Feature is marked completed (not demoted).
+5. Set `LOCALFORGE_IDLE_STOP_MS=0` and verify the legacy 30-minute
+   watchdog still applies.
+
+---
+
 ## Verification checklist (before opening PR to leonvanzyl/localforge)
 
 - [x] BUG-001: gemma3:4b stops retrying after one failure with guidance message
@@ -810,6 +913,10 @@ Files included in the upstream contribution:
   columns; the column-scoped Clear button shipped in this PR is the
   first iteration.
 - ENH-005 — Soften "Won't fit" warning to allow CPU spillover
+- ENH-007 — Idle-stop heuristic for sessions that won't terminate
+  (caught a real failure during 2026-04-29 verification: agent did the
+  work in 3 min, then burned 27 min on no-op tool calls, hit watchdog,
+  feature returned to backlog despite the work being done)
 
 These should be filed as separate issues / PRs upstream so the current
 contribution stays narrowly scoped to the verified bug fixes.
