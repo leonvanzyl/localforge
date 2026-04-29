@@ -142,3 +142,7 @@ success without invoking any tools" error — that's the signal to switch.
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
+
+## Support
+
+If this project helps you, you can support DreamForge Academy here: [Buy Me a Coffee](https://buymeacoffee.com/dreamforgeacademy).
