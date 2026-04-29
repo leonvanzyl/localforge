@@ -12,22 +12,56 @@ type ProviderDescriptor = {
   id: "lm_studio" | "ollama";
   label: string;
   installUrl: string;
+  defaultBaseUrl: string;
 };
 
 const PROVIDER_DESCRIPTORS: ProviderDescriptor[] = [
-  { id: "lm_studio", label: "LM Studio", installUrl: "https://lmstudio.ai" },
-  { id: "ollama", label: "Ollama", installUrl: "https://ollama.com" },
+  {
+    id: "lm_studio",
+    label: "LM Studio",
+    installUrl: "https://lmstudio.ai",
+    defaultBaseUrl: "http://127.0.0.1:1234",
+  },
+  {
+    id: "ollama",
+    label: "Ollama",
+    installUrl: "https://ollama.com",
+    defaultBaseUrl: "http://127.0.0.1:11434",
+  },
 ];
 
 function urlKeyFor(provider: string): "lm_studio_url" | "ollama_url" {
   return provider === "ollama" ? "ollama_url" : "lm_studio_url";
 }
 
+// Mirrors ProviderFailureKind in lib/agent/providers/types.ts. Duplicated as
+// a string-literal union here because that file is "server-only" — importing
+// it into a client component would crash the build.
+type ProbeFailureKind =
+  | "not_running"
+  | "timeout"
+  | "dns"
+  | "http_error"
+  | "wrong_shape"
+  | "unknown";
+
 type ModelsProbe =
   | { status: "idle" }
   | { status: "loading" }
   | { status: "ok"; models: string[] }
-  | { status: "error"; message: string };
+  | { status: "error"; message: string; kind: ProbeFailureKind };
+
+type ScanHit = {
+  providerId: "lm_studio" | "ollama";
+  label: string;
+  url: string;
+  modelCount: number;
+};
+
+type ScanState =
+  | { status: "idle" }
+  | { status: "loading" }
+  | { status: "done"; hits: ScanHit[] };
 
 export function SettingsForm({ initial }: { initial: FormState }) {
   const [values, setValues] = useState<FormState>(initial);
@@ -35,6 +69,7 @@ export function SettingsForm({ initial }: { initial: FormState }) {
   const [saved, setSaved] = useState(false);
   const [pending, startTransition] = useTransition();
   const [probe, setProbe] = useState<ModelsProbe>({ status: "idle" });
+  const [scan, setScan] = useState<ScanState>({ status: "idle" });
   const router = useRouter();
 
   const activeProvider = values.provider;
@@ -53,34 +88,52 @@ export function SettingsForm({ initial }: { initial: FormState }) {
   // Debounced model probe — refires whenever the provider or the active URL
   // changes. Sharing the same effect means switching provider also triggers
   // a re-fetch against the *new* provider's URL without a separate hook.
+  //
+  // Stale-call protection: every probe holds an AbortController so that when
+  // the deps change (e.g. user clicks "Switch to Ollama") any in-flight fetch
+  // from the previous provider is aborted. Without this, the old fetch would
+  // resolve after we've already moved to the new provider and call setProbe
+  // with stale data — producing a brief flash of the wrong status and (under
+  // React 19's strict checks in dev) a "state update on a component that
+  // hasn't mounted yet" console warning.
   const debounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const probeAbortRef = useRef<AbortController | null>(null);
   const runProbe = useCallback(
     (provider: string, url: string) => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (probeAbortRef.current) probeAbortRef.current.abort();
       setProbe({ status: "loading" });
+      const controller = new AbortController();
+      probeAbortRef.current = controller;
       debounceRef.current = setTimeout(async () => {
         try {
           const res = await fetch(
             `/api/providers/${provider}/models?url=${encodeURIComponent(url)}`,
-            { cache: "no-store" },
+            { cache: "no-store", signal: controller.signal },
           );
           const data = (await res.json()) as {
             ok?: boolean;
             models?: string[];
             error?: string;
+            kind?: ProbeFailureKind;
           };
+          if (controller.signal.aborted) return;
           if (!res.ok || !data.ok) {
             setProbe({
               status: "error",
               message: data.error ?? `Probe failed (HTTP ${res.status})`,
+              kind: data.kind ?? "unknown",
             });
             return;
           }
           setProbe({ status: "ok", models: data.models ?? [] });
         } catch (err) {
+          if (controller.signal.aborted) return;
+          if (err instanceof Error && err.name === "AbortError") return;
           setProbe({
             status: "error",
             message: err instanceof Error ? err.message : "Probe failed",
+            kind: "unknown",
           });
         }
       }, 400);
@@ -88,10 +141,44 @@ export function SettingsForm({ initial }: { initial: FormState }) {
     [],
   );
 
+  // When the configured provider can't be reached, kick off a parallel scan
+  // of every known provider's default port. If something else is responding
+  // we surface a one-click "switch to <provider>" suggestion. The scan
+  // fires once per error→error transition (i.e. once per failure cycle);
+  // a recovery resets state so a future failure can scan again.
+  const lastProbeStatusRef = useRef<ModelsProbe["status"]>("idle");
+  useEffect(() => {
+    const previous = lastProbeStatusRef.current;
+    lastProbeStatusRef.current = probe.status;
+
+    if (probe.status !== "error") {
+      setScan({ status: "idle" });
+      return;
+    }
+    // Already scanned for this failure cycle — don't refire on every
+    // re-render while we remain in the error state.
+    if (previous === "error") return;
+
+    let cancelled = false;
+    setScan({ status: "loading" });
+    fetch("/api/providers/scan", { cache: "no-store" })
+      .then((r) => r.json())
+      .then((data: { hits?: ScanHit[] }) => {
+        if (!cancelled) setScan({ status: "done", hits: data.hits ?? [] });
+      })
+      .catch(() => {
+        if (!cancelled) setScan({ status: "done", hits: [] });
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [probe.status]);
+
   useEffect(() => {
     runProbe(activeProvider, activeUrl);
     return () => {
       if (debounceRef.current) clearTimeout(debounceRef.current);
+      if (probeAbortRef.current) probeAbortRef.current.abort();
     };
   }, [activeProvider, activeUrl, runProbe]);
 
@@ -174,6 +261,18 @@ export function SettingsForm({ initial }: { initial: FormState }) {
       <ProviderStatus
         descriptor={activeDescriptor}
         probe={probe}
+        scan={scan}
+        onSwitchProvider={(providerId, url) => {
+          const urlKey = urlKeyFor(providerId);
+          // Update both the provider AND the matching url field together
+          // so the probe re-fires against the right URL on the next render.
+          setSaved(false);
+          setValues((prev) => ({
+            ...prev,
+            provider: providerId,
+            [urlKey]: url,
+          }));
+        }}
       />
 
       <ModelField
@@ -279,12 +378,110 @@ export function SettingsForm({ initial }: { initial: FormState }) {
   );
 }
 
+function guidanceForKind(
+  kind: ProbeFailureKind,
+  descriptor: ProviderDescriptor,
+): { headline: string; steps: React.ReactNode } {
+  const lmStudioSteps = (
+    <ol className="ml-4 mt-1 list-decimal space-y-0.5">
+      <li>Open the LM Studio app</li>
+      <li>Go to the <span className="font-medium">Local Server</span> tab and click <span className="font-medium">Start Server</span></li>
+      <li>Make sure a model is loaded (top-left dropdown)</li>
+      <li>If you changed the port in LM Studio, update the URL above</li>
+    </ol>
+  );
+  const ollamaSteps = (
+    <ol className="ml-4 mt-1 list-decimal space-y-0.5">
+      <li>Make sure the Ollama app is running, or run <code className="font-mono">ollama serve</code> in a terminal</li>
+      <li>Pull a model with <code className="font-mono">ollama pull gemma3:4b</code> if you have none yet</li>
+      <li>If you set <code className="font-mono">OLLAMA_HOST</code> to a custom port, update the URL above</li>
+    </ol>
+  );
+
+  switch (kind) {
+    case "not_running":
+      return {
+        headline: `${descriptor.label} isn't running`,
+        steps: descriptor.id === "lm_studio" ? lmStudioSteps : ollamaSteps,
+      };
+    case "timeout":
+      return {
+        headline: `${descriptor.label} took too long to respond`,
+        steps: (
+          <p className="mt-1">
+            The server didn&apos;t reply within 5 seconds. It may be hung — try
+            restarting {descriptor.label}, or check that the URL above points
+            at the right host.
+          </p>
+        ),
+      };
+    case "dns":
+      return {
+        headline: "Hostname couldn't be resolved",
+        steps: (
+          <p className="mt-1">
+            The host portion of the URL above doesn&apos;t resolve. For a
+            local-only setup the URL should usually be{" "}
+            <code className="font-mono">{descriptor.defaultBaseUrl}</code>.
+          </p>
+        ),
+      };
+    case "http_error":
+      return {
+        headline: `${descriptor.label} responded but rejected the request`,
+        steps: (
+          <p className="mt-1">
+            Something is listening at this URL, but it&apos;s not responding
+            the way {descriptor.label} should. Double-check the URL — you may
+            be pointing at a different service.
+          </p>
+        ),
+      };
+    case "wrong_shape":
+      return {
+        headline: "That URL doesn't look like " + descriptor.label,
+        steps: (
+          <p className="mt-1">
+            We got a response but the JSON didn&apos;t match what{" "}
+            {descriptor.label} returns. The URL may be pointing at the wrong
+            kind of server.
+          </p>
+        ),
+      };
+    default:
+      return {
+        headline: `${descriptor.label} not detected`,
+        steps: (
+          <p className="mt-1">
+            Start it locally, or install it from{" "}
+            <a
+              href={descriptor.installUrl}
+              target="_blank"
+              rel="noreferrer"
+              className="underline"
+            >
+              {descriptor.installUrl.replace(/^https?:\/\//, "")}
+            </a>
+            .
+          </p>
+        ),
+      };
+  }
+}
+
 function ProviderStatus({
   descriptor,
   probe,
+  scan,
+  onSwitchProvider,
 }: {
   descriptor: ProviderDescriptor;
   probe: ModelsProbe;
+  scan: ScanState;
+  onSwitchProvider: (
+    providerId: "lm_studio" | "ollama",
+    url: string,
+  ) => void;
 }) {
   if (probe.status === "loading") {
     return (
@@ -309,27 +506,55 @@ function ProviderStatus({
     );
   }
   if (probe.status === "error") {
+    const { headline, steps } = guidanceForKind(probe.kind, descriptor);
+    // The scan can find the configured provider on its default URL too;
+    // only suggest switching when we found a *different* provider responding.
+    const altHits =
+      scan.status === "done"
+        ? scan.hits.filter((h) => h.providerId !== descriptor.id)
+        : [];
     return (
       <div
         data-testid="settings-provider-status"
         data-provider-ok="false"
+        data-failure-kind={probe.kind}
         className="rounded-md border border-dashed border-border bg-muted/40 p-3 text-xs text-muted-foreground"
       >
-        <p className="font-medium text-foreground">
-          {descriptor.label} not detected
-        </p>
-        <p className="mt-1">
-          Start it locally, or install it from{" "}
-          <a
-            href={descriptor.installUrl}
-            target="_blank"
-            rel="noreferrer"
-            className="underline"
+        <p className="font-medium text-foreground">{headline}</p>
+        {steps}
+
+        {altHits.length > 0 && (
+          <div
+            data-testid="settings-scan-suggestion"
+            className="mt-3 rounded-md border border-border bg-background/60 p-2"
           >
-            {descriptor.installUrl.replace(/^https?:\/\//, "")}
-          </a>
-          . Details: {probe.message}
-        </p>
+            <p className="font-medium text-foreground">
+              Found {altHits[0].label} responding instead
+            </p>
+            <p className="mt-0.5">
+              <code className="font-mono">{altHits[0].url}</code> —{" "}
+              {altHits[0].modelCount} model
+              {altHits[0].modelCount === 1 ? "" : "s"} available.
+            </p>
+            <button
+              type="button"
+              data-testid="settings-scan-switch"
+              onClick={() =>
+                onSwitchProvider(altHits[0].providerId, altHits[0].url)
+              }
+              className="mt-2 rounded-md border border-input bg-background px-2.5 py-1 text-xs font-medium text-foreground shadow-sm hover:bg-muted/60"
+            >
+              Switch to {altHits[0].label}
+            </button>
+          </div>
+        )}
+
+        <details className="mt-2">
+          <summary className="cursor-pointer text-muted-foreground/80 hover:text-muted-foreground">
+            Technical details
+          </summary>
+          <p className="mt-1 break-all">{probe.message}</p>
+        </details>
       </div>
     );
   }

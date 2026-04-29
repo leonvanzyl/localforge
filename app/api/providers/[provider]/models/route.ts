@@ -41,8 +41,16 @@ export async function GET(req: NextRequest, ctx: RouteContext) {
     const message =
       err instanceof Error ? err.message : "Unknown provider error";
     const status = err instanceof ProviderUnavailableError ? 502 : 500;
+    const kind =
+      err instanceof ProviderUnavailableError ? err.kind : "unknown";
     return NextResponse.json(
-      { ok: false, url, error: message, models: [] as string[] },
+      {
+        ok: false,
+        url,
+        error: message,
+        kind,
+        models: [] as string[],
+      },
       { status },
     );
   }

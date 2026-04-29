@@ -5,6 +5,7 @@ import {
   LMStudioUnavailableError,
 } from "../lm-studio";
 import {
+  classifyFetchError,
   type LocalModelProvider,
   ProviderUnavailableError,
 } from "./types";
@@ -25,7 +26,12 @@ export const lmStudioProvider: LocalModelProvider = {
       return await listLmStudioModels(baseUrl, timeoutMs);
     } catch (err) {
       if (err instanceof LMStudioUnavailableError) {
-        throw new ProviderUnavailableError("lm_studio", err.message);
+        // The client tags response-side failures (HTTP error, wrong JSON
+        // shape) with a kind directly. Network failures leave kind unset
+        // and we fall back to classifyFetchError which walks `cause` to
+        // pull the Node-style code out (ECONNREFUSED, ENOTFOUND, etc.).
+        const kind = err.kind ?? classifyFetchError(err);
+        throw new ProviderUnavailableError("lm_studio", kind, err.message);
       }
       throw err;
     }
