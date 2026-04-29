@@ -764,6 +764,44 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
   let turns = 0;
   let maxTurnsExceeded = false;
 
+  // ENH-007 — idle-stop heuristic.
+  //
+  // Some local models (observed live with gpt-oss:20b on Ollama) complete the
+  // real work for a feature in the first few minutes and then enter a loop of
+  // hallucinated / no-op tool calls — repeated `Read package.json`,
+  // `Listing files`, made-up tool names — until the 30-minute session
+  // watchdog forcibly terminates the runner. The watchdog's `terminated`
+  // outcome demotes the feature back to backlog despite the work being
+  // legitimately done, wasting both the rest of that session and the work
+  // already on disk.
+  //
+  // The fix: a separate, faster idle detector that runs in parallel with the
+  // watchdog. Every IDLE_CHECK_INTERVAL_MS we re-fingerprint the project
+  // directory and bump `lastFsChangeAt` if it changed; we also track the
+  // start/end timestamps of `bash` tool calls so a long-running install
+  // (which may not move the fingerprint until it finishes) doesn't trip the
+  // detector. If neither has moved in the last IDLE_STOP_MS, we gracefully
+  // abort the Pi session — the regular result-handling path runs after, and
+  // the existing fingerprint guard correctly distinguishes:
+  //   - work was done before the idle stretch → fs changed → success
+  //   - no work ever happened → fs unchanged → confabulation rejection
+  //
+  // Configurable via LOCALFORGE_IDLE_STOP_MS (default 300_000 = 5 minutes);
+  // set to 0 to disable and fall back to the 30-minute watchdog only.
+  const idleStopMsRaw = Number.parseInt(
+    process.env.LOCALFORGE_IDLE_STOP_MS ?? "300000",
+    10,
+  );
+  const idleStopMs =
+    Number.isFinite(idleStopMsRaw) && idleStopMsRaw > 0 ? idleStopMsRaw : 0;
+  const IDLE_CHECK_INTERVAL_MS = 30_000;
+  const sessionStartAt = Date.now();
+  let lastFsChangeAt = sessionStartAt;
+  let lastBashEndAt = sessionStartAt;
+  let inProgressBashStartAt = null;
+  let lastDirSnapshot = dirBefore;
+  let idleStopTriggered = false;
+
   try {
     const piRuntime = createPiModelRuntime({ provider, baseUrl, model });
     const loader = new DefaultResourceLoader({
@@ -801,6 +839,20 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
         toolCalls++;
         debugLog("PI_TOOL_USE", { toolCalls, name: event.toolName });
         emitLog(summariseToolUse(event.toolName, event.args), "action");
+        // ENH-007: track in-flight bash so a long-running install
+        // (npm install, drizzle migrate, etc.) doesn't trip the idle
+        // detector while it's actively doing work.
+        if (event.toolName === "bash") {
+          inProgressBashStartAt = Date.now();
+        }
+      } else if (event.type === "tool_execution_end") {
+        // ENH-007: bash just finished — record the timestamp and clear
+        // the in-flight marker. fingerprintProjectDir on the next idle
+        // check will pick up any files the bash command produced.
+        if (event.toolName === "bash") {
+          inProgressBashStartAt = null;
+          lastBashEndAt = Date.now();
+        }
       } else if (
         event.type === "message_update" &&
         event.assistantMessageEvent.type === "text_delta"
@@ -845,12 +897,65 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       once: true,
     });
 
+    // ENH-007: periodic idle-stop checker. Runs on a separate timer from the
+    // session itself so we can sample the project working directory without
+    // disturbing the Pi event loop. Skipped entirely when idleStopMs is 0
+    // (user-disabled) — the 30-minute watchdog still applies as a hard cap.
+    const idleCheckInterval =
+      idleStopMs > 0
+        ? setInterval(() => {
+            try {
+              const current = fingerprintProjectDir(projectDir);
+              if (
+                current.count !== lastDirSnapshot.count ||
+                current.sum !== lastDirSnapshot.sum
+              ) {
+                lastFsChangeAt = Date.now();
+                lastDirSnapshot = current;
+              }
+              if (idleStopTriggered) return;
+              // Don't terminate while a bash call is in flight — could be a
+              // long-running install that hasn't started writing yet.
+              if (inProgressBashStartAt !== null) return;
+              const idleSinceMs =
+                Date.now() - Math.max(lastFsChangeAt, lastBashEndAt);
+              if (idleSinceMs > idleStopMs) {
+                idleStopTriggered = true;
+                debugLog("IDLE_STOP_TRIGGERED", {
+                  idleSinceMs,
+                  thresholdMs: idleStopMs,
+                  lastFsChangeAt,
+                  lastBashEndAt,
+                  toolCalls,
+                });
+                emitLog(
+                  `Idle-stop: agent has produced no filesystem changes and run no bash commands for ${Math.round(
+                    idleSinceMs / 1000,
+                  )}s. Terminating session early. If real work was done before this point, the feature will still complete; otherwise the confabulation guard will reject the session as expected.`,
+                  "info",
+                );
+                void session.abort();
+              }
+            } catch (err) {
+              // Never let the idle checker take down the runner. Just log.
+              debugLog("IDLE_CHECK_ERROR", {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }, IDLE_CHECK_INTERVAL_MS)
+        : null;
+    // Don't keep Node alive solely on this interval if the runner exits for
+    // any other reason — the finally block clears it normally, this is just
+    // belt-and-suspenders.
+    idleCheckInterval?.unref?.();
+
     try {
       await session.prompt(userPrompt, {
         expandPromptTemplates: false,
         source: "extension",
       });
     } finally {
+      if (idleCheckInterval) clearInterval(idleCheckInterval);
       unsubscribe();
       session.dispose();
     }
@@ -860,6 +965,7 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       resultSubtype,
       turns,
       maxTurnsExceeded,
+      idleStopTriggered,
     });
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
@@ -871,6 +977,21 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       toolCalls,
       resultSubtype,
     });
+  }
+
+  // ENH-007: when we triggered the idle-stop, the Pi session was aborted on
+  // OUR signal — the resulting "aborted" stopReason / errorMessage is not a
+  // real failure, it's our own termination. Clear those so the regular
+  // ok-computation runs as if the session ended normally; the downstream
+  // confabulation guard then makes the actual call based on whether the
+  // project working directory changed.
+  if (idleStopTriggered) {
+    debugLog("IDLE_STOP_OVERRIDE_RESULT", {
+      previousResultSubtype: resultSubtype,
+      previousErrorMessage: errorMessage,
+    });
+    errorMessage = null;
+    resultSubtype = "success";
   }
 
   let ok =
