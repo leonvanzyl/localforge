@@ -177,6 +177,26 @@
 .ws-crumb .nm { font-family: 'Fraunces', serif; font-weight: 500; font-size: 16px; white-space: nowrap; flex-shrink: 0; }
 .ws-crumb .pth { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
+/* ENH-006: effective-model badge in the top bar. Subtle by default,
+   slightly emphasised while a run is in flight so users can spot which
+   model is actually doing the work. */
+.tb-model {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--ink-3); white-space: nowrap; min-width: 0;
+}
+.tb-model.running {
+  border-color: var(--accent); color: var(--ink-1);
+  background: rgba(200,90,43,0.06);
+}
+[data-theme="dark"] .tb-model.running { background: rgba(224,122,74,0.08); }
+.tb-model-provider { color: var(--ink-3); }
+.tb-model-sep { color: var(--ink-4); }
+.tb-model-name { color: var(--ink-1); font-weight: 500; }
+.tb-model.running .tb-model-name { color: var(--accent); }
+
 .tb-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .btn.tb-run-btn { white-space: nowrap; }
 .tb-run-label { white-space: nowrap; }

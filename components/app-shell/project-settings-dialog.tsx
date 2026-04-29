@@ -255,6 +255,14 @@ export function ProjectSettingsDialog({
             : prev,
         );
       }
+      // Notify the rest of the app that effective settings changed so
+      // dependent UI (e.g. the top-bar model badge — ENH-006) can refetch
+      // without forcing the user to reload the page.
+      window.dispatchEvent(
+        new CustomEvent("localforge:settings-changed", {
+          detail: { projectId },
+        }),
+      );
       setSaved(true);
     } catch (err) {
       setError(
