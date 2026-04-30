@@ -2,6 +2,7 @@
 
 import React from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { useTheme } from "@/components/theme/theme-provider";
 import { useShell } from "@/components/app-shell/shell-context";
 import { TopBar } from "@/components/forge/top-bar";
@@ -210,37 +211,57 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
   // state immediately instead of waiting for the 5s poll tick. Without this
   // nudge the UI feels unresponsive after "run queue" and users may
   // double-click, racing another start_all against the first.
+  // BUG-004: previously these handlers silently no-oped when the user had
+  // no active project (e.g. invoked via Ctrl+Enter from /settings) or when
+  // the fetch failed. The TopBar button is now gated on activeProject, but
+  // the keyboard shortcut path can still reach here with no project, and
+  // the server can still 500. Surface both as a toast so the user has
+  // feedback instead of an apparent no-op.
   const handleStartAll = React.useCallback(() => {
     const projectId = getActiveProjectId();
-    if (!projectId) return;
+    if (!projectId) {
+      toast.error("No active project — open a project first to run its queue.");
+      return;
+    }
     fetch(`/api/projects/${projectId}/orchestrator`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "start_all" }),
     })
-      .then(() => {
+      .then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(text || `HTTP ${res.status}`);
+        }
         requestRefresh();
         router.refresh();
       })
-      .catch(() => {
-        /* ignore */
+      .catch((err) => {
+        toast.error(`Run queue failed: ${err?.message ?? "unknown error"}`);
       });
   }, [getActiveProjectId, requestRefresh, router]);
 
   const handlePauseAll = React.useCallback(() => {
     const projectId = getActiveProjectId();
-    if (!projectId) return;
+    if (!projectId) {
+      toast.error("No active project — nothing to pause.");
+      return;
+    }
     fetch(`/api/projects/${projectId}/orchestrator`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "stop_all" }),
     })
-      .then(() => {
+      .then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(text || `HTTP ${res.status}`);
+        }
         requestRefresh();
         router.refresh();
       })
-      .catch(() => {
-        /* ignore */
+      .catch((err) => {
+        toast.error(`Pause failed: ${err?.message ?? "unknown error"}`);
       });
   }, [getActiveProjectId, requestRefresh, router]);
 

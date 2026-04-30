@@ -328,8 +328,7 @@ the bug fixes above to keep the contribution scope tight.
 
 ## BUG-004 — "Run queue" silently no-ops from non-kanban routes
 
-**Status:** OPEN (observed during 2026-04-29 verification, not yet
-investigated or fixed; out of scope for the current PR)
+**Status:** FIXED — pending live verification (2026-04-29)
 **Reported:** 2026-04-29
 **Severity:** Medium (data loss in user trust — the user thinks they
 launched a run, nothing happens, no error feedback)
@@ -345,21 +344,75 @@ overlay (e.g. settings panel just closed) sometimes results in:
 - The agent panel stays idle indefinitely
 - Refreshing the page and clicking the button again works correctly
 
-### Hypotheses (not yet confirmed)
+### Root cause
 
-1. The button's onClick uses a relative URL or a stale `projectId` derived
-   from page state that's undefined on certain routes.
-2. A modal overlay (settings) intercepts the click event even when it
-   appears closed.
-3. Hot module reload during a settings save resets the orchestrator's
-   in-memory state mid-click.
+`ProjectView` calls `setActiveProject({...})` on mount and
+`setActiveProject(null)` on unmount
+(`components/forge/project-view.tsx:91-99`). Navigating to `/settings` or
+any other non-project route therefore clears `activeProject` to null.
 
-### Triage suggestion
+The Run queue button in `components/forge/top-bar.tsx`, however, was
+rendered unconditionally — not gated on `activeProject`. So on
+non-project routes the button was still visible. Clicking it called
+`handleStartAll` in `app-shell.tsx`, which:
 
-Check the request actually fires by opening DevTools Network tab, click
-Run queue, and confirm a POST appears. If no request fires, the bug is
-client-side. If the request fires and returns a non-200, it's
-server-side. Currently no instrumentation distinguishes these.
+1. Asked `getActiveProjectId()` for the active project id.
+2. `activeProject` was null, so the helper fell back to a URL regex
+   (`^/projects/(\d+)`).
+3. On `/settings` that regex doesn't match → returned null.
+4. `if (!projectId) return;` short-circuited the handler with no error,
+   no toast, no log entry.
+
+The same silent-failure shape applied to the keyboard shortcut
+(Ctrl+Enter), which calls `handleStartAll` directly without going
+through the gated button, and to any non-200 from the orchestrator
+endpoint (the `.catch(() => { /* ignore */ })` swallowed it).
+
+### Fix
+
+Two layers in this PR:
+
+1. **Hide the run/pause button when there is no active project**
+   (`components/forge/top-bar.tsx`). Removes the most common reproducer
+   — clicking the button on a non-project route. The button is now
+   strictly project-scoped, matching the rest of the orchestrator UI.
+
+2. **Surface feedback in the handlers themselves**
+   (`components/forge/app-shell.tsx`). `handleStartAll` and
+   `handlePauseAll` now:
+   - Show a toast (`toast.error("No active project ...")`) when
+     `getActiveProjectId()` returns null. This catches the keyboard
+     shortcut path which can still reach the handler with no project.
+   - Treat non-200 responses as failures and surface the error message
+     via toast instead of silently swallowing them.
+
+### Files changed
+
+- `components/forge/top-bar.tsx`
+- `components/forge/app-shell.tsx`
+
+### Manual test plan
+
+1. Open a project → Run queue button visible ✓
+2. Navigate to `/settings` → button hidden ✓ (was: visible and silently no-oped)
+3. Press Ctrl+Enter on `/settings` → red toast "No active project ..."
+   appears ✓ (was: silent no-op)
+4. Open a project → Run queue button visible again ✓
+5. Click Run queue while orchestrator endpoint is broken (simulate by
+   stopping dev server mid-flight) → toast surfaces the HTTP error ✓
+   (was: silent no-op)
+
+### Hypotheses considered and rejected
+
+- "A modal overlay intercepts the click" — ruled out; the modal is
+  unmounted on close, and the button is in the top bar (z-index
+  separate from modal layer).
+- "Hot module reload during a settings save resets the orchestrator's
+  in-memory state mid-click" — ruled out; HMR resets server-side
+  module state, not button click handlers, and the symptom (no POST
+  fires at all) was clearly client-side. The actual cause was the
+  cleared `activeProject` plus the URL-regex fallback not matching
+  non-project routes.
 
 ---
 

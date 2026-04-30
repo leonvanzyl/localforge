@@ -118,27 +118,32 @@ export function TopBar({
 
       {/* Actions */}
       <div className="tb-actions">
-        {isRunning ? (
-          <button
-            className="btn tb-run-btn"
-            onClick={onPauseAll}
-            aria-label="Pause all agents"
-            title="Pause all agents"
-          >
-            <PauseIcon size={14} />
-            <span className="tb-run-label">pause all</span>
-          </button>
-        ) : (
-          <button
-            className="btn primary tb-run-btn"
-            onClick={onStartAll}
-            aria-label="Run queue"
-            title="Run queue"
-          >
-            <PlayIcon size={14} />
-            <span className="tb-run-label">run queue</span>
-          </button>
-        )}
+        {/* Run/Pause is project-scoped: hide it when no project is active so
+            users on /settings or other non-project routes don't click a
+            button that silently no-ops (BUG-004). */}
+        {activeProject ? (
+          isRunning ? (
+            <button
+              className="btn tb-run-btn"
+              onClick={onPauseAll}
+              aria-label="Pause all agents"
+              title="Pause all agents"
+            >
+              <PauseIcon size={14} />
+              <span className="tb-run-label">pause all</span>
+            </button>
+          ) : (
+            <button
+              className="btn primary tb-run-btn"
+              onClick={onStartAll}
+              aria-label="Run queue"
+              title="Run queue"
+            >
+              <PlayIcon size={14} />
+              <span className="tb-run-label">run queue</span>
+            </button>
+          )
+        ) : null}
 
         <button
           className="btn icon-btn ghost"
