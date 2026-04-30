@@ -363,6 +363,115 @@ server-side. Currently no instrumentation distinguishes these.
 
 ---
 
+## BUG-006 — Coding agent inherits the harness CLAUDE.md and refuses to run
+
+**Status:** FIXED — pending live verification (2026-04-30)
+**Reported:** 2026-04-30
+**Severity:** Critical (silently disables the coding agent for every
+user whose project sits inside the LocalForge repo's `projects/`
+folder — which is the default install layout)
+
+### Symptom
+
+Clicking Run queue on a project produced an agent log line like:
+
+> "I'm only a project-assistant and don't have permission to execute
+> shell commands"
+
+…immediately followed by `toolCalls=0` confabulation rejection.
+Verified live 2026-04-30 with `gpt-oss:20b` against the Author
+Landing project on the "Scaffold Next.js app" feature — the model
+that we *know* runs `npx create-next-app .` legitimately on the
+DreamForgeIdeas backlog suddenly refused to do anything.
+
+The model wasn't broken — it was being told it shouldn't run bash.
+
+### Root cause
+
+Pi's `DefaultResourceLoader` walks up from `cwd` looking for context
+files (`CLAUDE.md`, `AGENTS.md`, etc.) and ingests every one it finds
+into the agent's system context.
+
+The default LocalForge install layout puts user project folders
+under the harness repo:
+
+  H:\localforge\projects\<name>\         ← agent cwd
+  H:\localforge\projects\                ← no context file
+  H:\localforge\                         ← CLAUDE.md exists ★
+
+★ The harness's own `CLAUDE.md` is the **user-facing project-
+assistant rulebook** — it tells whatever model is invoked from this
+repo that it is a read-only assistant which CANNOT modify source
+code, CANNOT run bash, and CANNOT create / delete files. That
+rulebook is correct and important for the assistant the user chats
+with directly inside the LocalForge repo. It is catastrophically
+wrong for the coding agent which is meant to scaffold new code in a
+sub-project.
+
+Pi's loader didn't know the difference and merrily merged the
+restrictive rulebook into every coding-agent session's system
+context. Bigger / well-aligned models (gpt-oss:20b in particular)
+took the rulebook seriously and politely refused to do anything.
+Smaller models confabulated tool calls anyway and the existing
+ENH-001 confabulation guard caught them — masking the real bug
+behind a "model can't drive tools" error message.
+
+### Fix
+
+`scripts/agent-runner.mjs` now passes `noContextFiles: true` to the
+`DefaultResourceLoader` constructor. This is the same flag the
+bootstrapper route (`app/api/agent-sessions/[id]/generate-features/route.ts`)
+already sets via the `createPiResourceLoader` helper.
+
+The coding agent's instructions come from
+`buildCodingSystemPrompt()` (which is built explicitly inside the
+runner) and the per-feature prompt file the orchestrator writes to
+disk. There is no use case where a user wants to add coding-agent-
+specific rules via a parent-directory `CLAUDE.md`; if such a use
+case appears later we can add a project-scoped opt-in (e.g. only
+load `<projectDir>/CLAUDE.md` if it exists, never walk the parent
+chain).
+
+### Files changed
+
+- `scripts/agent-runner.mjs` — added `noContextFiles: true` to the
+  `DefaultResourceLoader` constructor.
+
+### Manual test plan
+
+1. Have the LocalForge repo's `CLAUDE.md` in place at the harness
+   root (it is, by design).
+2. Configure a project with a model known to obey explicit
+   instructions (`gpt-oss:20b` works well as a probe — small models
+   confabulate too readily to be a clean signal here).
+3. Click Run queue on a feature whose description tells the agent
+   to run a bash command (e.g. "Scaffold Next.js app").
+4. **Expect (post-fix):** the agent runs `npx create-next-app .` via
+   bash, real files appear in `<projectDir>/`, the feature lands in
+   Completed.
+5. **Pre-fix repro for confirmation:** revert the change, restart
+   the dev server, run the same scaffold step. Agent log will
+   contain the "I'm only a project-assistant…" sentence and the
+   feature will demote with `toolCalls=0`.
+
+### Why this only surfaced now
+
+Earlier verification on the DreamForgeIdeas backlog used
+`qwen2.5-coder:7b`, `llama3.2:latest`, and other small models. Those
+models confabulated tool calls regardless of the system context, so
+the failure mode looked like the documented "small Ollama models
+confabulate" pattern — and ENH-001 already catches that. We didn't
+notice that the *mechanism* was different.
+
+When the user paired `gpt-oss:20b` (which actually respects system
+context) with a project sitting inside the harness repo, the
+underlying bug surfaced. The model wasn't confabulating — it was
+declining to act. ENH-001's confabulation guard fired correctly on
+the empty toolCalls count, but the user-visible reason was wrong:
+the rejection message blamed the model, not the leaked rulebook.
+
+---
+
 ## ENH-001 — Reject sessions that don't actually do work (defence in depth)
 
 **Status:** IMPLEMENTED — pending live verification of the second layer

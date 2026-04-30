@@ -837,6 +837,25 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
+      // BUG-006: do NOT auto-load CLAUDE.md / AGENTS.md / etc. from the
+      // project's cwd or any parent directory. The default Pi loader
+      // walks up the dir tree looking for context files; when a project
+      // sits inside the LocalForge repo (the default install layout —
+      // `H:\localforge\projects\<name>\`), the loader hops two levels
+      // up and ingests the harness's own `CLAUDE.md` — which is the
+      // user-facing project-assistant rulebook ("READ-only, cannot run
+      // bash, cannot modify source code"). The coding agent then dutifully
+      // refuses to scaffold anything. Verified live 2026-04-30: gpt-oss:20b
+      // emitted "I'm only a project-assistant and don't have permission to
+      // execute shell commands" on the Author Landing scaffold step.
+      //
+      // The coding agent's actual instructions come from
+      // buildCodingSystemPrompt() below + the per-feature prompt file the
+      // orchestrator writes; nothing in the parent dir is ever the right
+      // place to add coding-agent-specific rules. So skip context-file
+      // loading entirely here. The bootstrapper route already does this
+      // via its `noContextFiles: true` helper.
+      noContextFiles: true,
       systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort, process.env.LOCALFORGE_PLAYWRIGHT_ENABLED === "true"),
       extensionFactories: [workspaceGuardExtension],
     });
