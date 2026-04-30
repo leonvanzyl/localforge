@@ -2,6 +2,9 @@
   "name": "localforge",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": ">=20"
+  },
   "description": "LocalForge - long-running autonomous coding harness that uses local LLMs (LM Studio) to build applications on autopilot.",
   "scripts": {
     "dev": "next dev -p 7777",

@@ -69,7 +69,7 @@ clear verification, and a tight dependency on whatever came before it.
 
 ## UI layout
 
-```
+```text
 ┌──────────────────────────────────────────────────────┐
 │  Sidebar (~240px)        │   Main content            │
 │                          │                           │
@@ -92,7 +92,7 @@ Clean typography, no decorative gradients.
 Dependency arrows show what must be `completed` before a feature is
 eligible for pickup.
 
-```
+```text
 1. Scaffold Next.js
         │
         ▼
@@ -123,7 +123,7 @@ eligible for pickup.
 ```
 
 ### 1. Scaffold Next.js app
-Initialize a Next.js 15 App Router project IN THE CURRENT WORKING
+Initialize a Next.js 16 App Router project IN THE CURRENT WORKING
 DIRECTORY (the agent's cwd IS the project root) with TypeScript and
 Tailwind. Use `npx create-next-app@latest .` so the scaffold lands
 directly in cwd. Confirm `npm run dev` starts on port 3000.

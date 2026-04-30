@@ -700,6 +700,7 @@ function isTransientError(errorMessage) {
 // the process lifetime and a guidance message is surfaced to the user.
 function isPermanentError(errorMessage) {
   if (!errorMessage) return false;
+  // Substring patterns — these are unique enough that plain `includes` is safe.
   const permanentPatterns = [
     "does not support tools",
     "tool use is not supported",
@@ -709,8 +710,6 @@ function isPermanentError(errorMessage) {
     "invalid api key",
     "incorrect api key",
     "unauthorized",
-    "401",
-    "403",
     // Resource-exhaustion errors. Retrying immediately won't help — the user
     // has to free RAM (close apps, stop other Ollama models) or switch to a
     // smaller model. Once they fix it and click Start again the blocklist
@@ -720,7 +719,12 @@ function isPermanentError(errorMessage) {
     "cuda out of memory",
   ];
   const lower = errorMessage.toLowerCase();
-  return permanentPatterns.some((p) => lower.includes(p.toLowerCase()));
+  if (permanentPatterns.some((p) => lower.includes(p))) return true;
+  // HTTP status codes need word-boundary matching — bare "401"/"403" as
+  // substrings can appear in unrelated tokens (model ids, port numbers,
+  // payload bytes) and would otherwise misclassify transient errors as
+  // permanent. Match only when they appear as standalone digits.
+  return /\b(401|403)\b/.test(lower);
 }
 
 // Sub-classifier for the permanent-error guidance message. Two distinct

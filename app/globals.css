@@ -188,13 +188,13 @@
   color: var(--ink-3); white-space: nowrap; min-width: 0;
 }
 .tb-model.running {
-  border-color: var(--accent); color: var(--ink-1);
+  border-color: var(--accent); color: var(--ink);
   background: rgba(200,90,43,0.06);
 }
 [data-theme="dark"] .tb-model.running { background: rgba(224,122,74,0.08); }
 .tb-model-provider { color: var(--ink-3); }
 .tb-model-sep { color: var(--ink-4); }
-.tb-model-name { color: var(--ink-1); font-weight: 500; }
+.tb-model-name { color: var(--ink); font-weight: 500; }
 .tb-model.running .tb-model-name { color: var(--accent); }
 
 .tb-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }

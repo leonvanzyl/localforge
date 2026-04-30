@@ -949,7 +949,7 @@ function finalizeSession(
       : `Feature "${rs.feature.title}" returned to backlog`;
     let logMessage = baseMsg;
     if (permanent) {
-      logMessage = `${baseMsg} — paused until next restart due to a model-incompatibility error. Fix the model in settings, then click Start.`;
+      logMessage = `${baseMsg} — paused due to a model-incompatibility error. Fix the model in settings, then click Run queue to retry (the in-process blocklist clears on every explicit Start).`;
     } else if (escalatedDueToConfabulation) {
       logMessage = `${baseMsg} — paused until next Start after ${CONFABULATION_BLOCK_THRESHOLD} consecutive confabulations. The agent keeps claiming success without doing real work. Switch to a more capable model (try qwen2.5-coder:7b or llama3.1:8b on Ollama), then click Start.`;
     }
@@ -1237,4 +1237,10 @@ export function __resetStateForTests(): void {
   const state = getState();
   state.running.clear();
   state.events.removeAllListeners();
+  // Per-process state added in BUG-001/ENH-001 must reset too, otherwise a
+  // test that simulates a permanent failure or a confabulation streak leaks
+  // into the next case and makes the retry/blocklist logic look as if a
+  // feature were still blocked.
+  state.permanentlyBlocked.clear();
+  state.confabulationCounts.clear();
 }
