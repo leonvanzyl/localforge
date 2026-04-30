@@ -11,12 +11,32 @@ enhancements — not yet implemented).
 
 ---
 
-## 2026-04-29 verification session — final summary
+## 2026-04-30 verification session — final summary (supersedes 2026-04-29)
 
-This branch was built and verified across multiple live runs against the
-DreamForgeIdeas example backlog using three different Ollama models
-(`gemma3:4b`, `llama3.2:latest`, `qwen2.5-coder:32b`, `qwen2.5-coder:7b`,
-`gpt-oss:20b`). Findings are documented per-bug below; the headline is:
+This branch was built and verified across two live test backlogs:
+DreamForgeIdeas (10 features, used 2026-04-29 with `gemma3:4b`,
+`llama3.2:latest`, `qwen2.5-coder:32b`, `qwen2.5-coder:7b`,
+`gpt-oss:20b`) and Author Landing (8 features, used 2026-04-30 with
+`qwen2.5-coder:7b` and `gpt-oss:20b` running CPU-spilled on an 8 GB
+GPU). Findings are documented per-bug below; the headline is:
+
+**Critical correction first.** During Author Landing testing on
+2026-04-30 we discovered **BUG-006** — Pi's default resource loader
+walks up from the project's working directory looking for context
+files, and the default install layout puts user projects under
+`<harness>/projects/<name>/`, so the loader reaches the harness's own
+`CLAUDE.md` two levels up and ingests it into the coding agent's
+system context. That `CLAUDE.md` is the user-facing project-assistant
+rulebook ("READ-only, cannot run bash, cannot modify source code").
+Big well-aligned models took the rulebook seriously and refused to
+do anything; smaller models ignored the restrictions and confabulated
+tool calls anyway, which masked the underlying bug behind the
+existing "small Ollama models confabulate" pattern through every
+prior verification run. **All `gpt-oss:20b` conclusions in the
+2026-04-29 verification summary about "reads but doesn't write on
+multi-step features" were contaminated by BUG-006 and have been
+superseded.** See the BUG-006 entry below for the fix and the
+re-verification plan.
 
 **Harness side — green light.** Every fix in this PR demonstrably works:
 
@@ -25,46 +45,65 @@ DreamForgeIdeas example backlog using three different Ollama models
 - BUG-002 made the feature-detail dialog smooth to type in during live
   agent runs (verified with active SSE traffic).
 - BUG-003 added an accessible name to the dependency picker.
-- ENH-001 caught three confabulation patterns across two model sizes:
-  zero-tool-call, single-probing-tool-call, and read-only sessions on
-  multi-step features. After 2 confabulations on the same feature the
-  orchestrator blocklists it instead of looping forever — verified live.
+- BUG-006 stops the harness `CLAUDE.md` from leaking into the coding
+  agent's context (verified: pre-fix `gpt-oss:20b` emitted "I'm only
+  a project-assistant and don't have permission to execute shell
+  commands" on the scaffold step; post-fix the same step ran
+  `npx create-next-app .` and produced real files on disk).
+- ENH-001 caught three confabulation patterns across multiple model
+  sizes: zero-tool-call, single-probing-tool-call, and read-only
+  sessions on multi-step features. After 2 confabulations on the same
+  feature the orchestrator blocklists it instead of looping forever —
+  verified live on Author Landing.
 - ENH-004 (first iteration) ships a per-column Clear button on the
   Completed column.
 - ENH-006 surfaces the effective model on the top bar with auto-refresh
   on settings save.
+- ENH-007 idle-stop terminates unproductive sessions inside 60 s on
+  Author Landing — a productive retry frequently broke through on the
+  same feature where the first attempt had been Read-only.
 - CHORE-001 fixed `npm run lint` (Next 16 removed `next lint`).
 
-**Model side — known limitation.** None of the locally-runnable models
-tested completed the full DreamForgeIdeas backlog. The honest summary:
+**Model side — Author Landing live result with `gpt-oss:20b`
+post-BUG-006:** 8-feature backlog, **4 features completed end-to-end
+by the agent** (scaffold, db-setup, schema migration, hero section
+with self-correcting `npm run build` cycle), **4 by human handoff**
+(Subscribe API, author block + placeholder PNG, excerpt with long
+verbatim text, signup form React component). The resulting
+`npm run build` produces a clean Next.js 16 app — static landing,
+working subscribe API, all routes resolve. The harness honestly
+flagged every failure as confabulation and demoted; it never faked a
+completion. The pattern that emerged:
 
-- Models without tool support (`gemma3:*`) cannot drive the agent at all.
-- Small/mid code models on Ollama (`qwen2.5-coder:7b`, `llama3.2:latest`)
-  emit JSON-shaped tool calls as plain assistant text — Ollama's
-  OpenAI-compat shim does not parse these into structured `tool_calls`,
-  so Pi sees zero tool calls. Confirmed via direct curl: only
-  `gpt-oss:20b` returns structured tool_calls correctly.
-- `gpt-oss:20b` runs the scaffold step legitimately (real `bash` →
-  `npx create-next-app .` → real files on disk), but on multi-step
-  features (db-setup, layout) it reads existing files and "claims done"
-  without ever invoking Write/Edit. Even with a prescriptive system
-  prompt + per-feature spec listing exact filenames, the model does not
-  follow through on incremental writes.
-- After the scaffold step, `gpt-oss:20b` also exhibits a "no-op tool
-  loop" pattern — calling hallucinated tool names (`feature_get_ready`,
-  `assistant`) and repeated `Read package.json` until the 30-min
-  watchdog kills the session. This is documented as ENH-007.
+- ✅ CLI-driven steps (`npx create-next-app`, `drizzle-kit`,
+  `npm install`) — clean.
+- ✅ Edit-existing-file with short content (one new section, no long
+  literal text) — succeeds on retry. First pass tends to be Read-only,
+  fingerprint guard demotes, second pass writes.
+- ❌ Pure from-scratch code (route handler, fresh React component) —
+  confabulates twice → blocklisted.
+- ❌ Binary file creation (PNG / JPEG placeholder) — Write tool is
+  text-oriented; the model can't reliably produce a valid binary.
+- ❌ Long verbatim text inserts (e.g. embedding a 750-char prose
+  excerpt into JSX) — model stalls on accurate reproduction.
 
 **Bottom line for upstream PR:** the harness no longer fakes
 completions, no longer infinite-loops, no longer claims success on
-empty project directories. It honestly reports what the local model
-can and cannot do. Whether a given user can complete a backlog with
-the harness is downstream of their model choice — a problem the
-README's new "Model selection" section now explains explicitly.
+empty project directories, and no longer secretly tells the coding
+agent it isn't allowed to do anything. With BUG-006 fixed the
+practical ceiling for `gpt-oss:20b` on consumer hardware is much
+higher than we originally documented — the README "Model selection"
+section now describes the actual capability boundary (CLI-driven and
+edit-existing succeed; from-scratch code, binary files, and long
+verbatim text are the documented hand-off cases).
 
-ENH-007 (idle-stop heuristic), ENH-002, ENH-003, ENH-005 and the
-broader iteration of ENH-004 are tracked here for future PRs and not
-part of this contribution.
+**Out of scope for this PR (tracked here for follow-up PRs):**
+BUG-004 (run queue silent no-op), BUG-005 (bootstrapper Cancel),
+ENH-002 (copy logs), ENH-003 (capability-aware model picker), ENH-005
+(soften "Won't fit" warning), and the broader iteration of ENH-004
+(bulk-select-with-checkboxes). Those are queued in
+`pr/triage-batch-2` and `fix/bootstrapper-confab-and-bypass-script`
+to ship after this PR lands.
 
 ---
 
