@@ -24,6 +24,7 @@ import {
 import { CSS } from "@dnd-kit/utilities";
 
 import { Trash2 } from "lucide-react";
+import { toast } from "sonner";
 
 import { SearchIcon } from "@/components/forge/icons";
 import {
@@ -505,7 +506,20 @@ export function ForgeKanban({
         throw new Error(data.error || `Failed to load (${res.status})`);
       }
       const data = (await res.json()) as { features: FeatureCardData[] };
-      setState({ kind: "ready", features: data.features ?? [] });
+      const features = data.features ?? [];
+      // ENH-004 broader: prune `selectedIds` to the freshly loaded id set so
+      // a feature that was deleted elsewhere (detail dialog, Clear button,
+      // bulk delete from another tab) doesn't linger in the selection — the
+      // sticky bar count would drift and the next bulk delete would 404 on
+      // the stale ids.
+      setSelectedIds((prev) => {
+        if (prev.size === 0) return prev;
+        const validIds = new Set(features.map((f) => f.id));
+        const next = new Set<number>();
+        for (const id of prev) if (validIds.has(id)) next.add(id);
+        return next.size === prev.size ? prev : next;
+      });
+      setState({ kind: "ready", features });
     } catch (err) {
       setState({
         kind: "error",
@@ -573,11 +587,15 @@ export function ForgeKanban({
         (r): r is PromiseRejectedResult => r.status === "rejected",
       );
       if (firstFailure) {
-        setDragError(
+        const message =
           firstFailure.reason instanceof Error
             ? firstFailure.reason.message
-            : "Failed to clear some completed features",
-        );
+            : "Failed to clear some completed features";
+        // Surface via both the persistent inline banner and a sonner toast
+        // (project guideline) — the toast catches users who've scrolled
+        // away from the kanban after triggering the action.
+        setDragError(message);
+        toast.error(message);
       }
       await load();
     } finally {
@@ -625,11 +643,12 @@ export function ForgeKanban({
         (r): r is PromiseRejectedResult => r.status === "rejected",
       );
       if (firstFailure) {
-        setDragError(
+        const message =
           firstFailure.reason instanceof Error
             ? firstFailure.reason.message
-            : "Failed to delete some selected features",
-        );
+            : "Failed to delete some selected features";
+        setDragError(message);
+        toast.error(message);
       }
       setSelectedIds(new Set<number>());
       setSelectMode(false);

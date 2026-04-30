@@ -164,10 +164,6 @@ function FeatureDetailDialogImpl({
   const [depPick, setDepPick] = React.useState<string>("");
 
   const [logs, setLogs] = React.useState<AgentLogEntry[]>([]);
-  // ENH-002: ref onto the logs list <ul> so the clipboard fallback can
-  // select its text via Range + Selection when navigator.clipboard is
-  // unavailable (insecure context, browser permissions blocked, etc.).
-  const logsListRef = React.useRef<HTMLUListElement | null>(null);
   const [logsLoading, setLogsLoading] = React.useState(false);
   const [logsError, setLogsError] = React.useState<string | null>(null);
 
@@ -409,9 +405,11 @@ function FeatureDetailDialogImpl({
   // ENH-002: copy the current feature's agent activity log to the clipboard
   // as plain text. Tries `navigator.clipboard.writeText` first; on failure
   // (insecure context, permissions blocked, missing API) falls back to
-  // selecting the rendered <ul> via Range + Selection so the user can
-  // press Ctrl/Cmd+C themselves. Both paths surface a sonner toast so
-  // the user always gets feedback.
+  // selecting a hidden textarea seeded with the same `formatLogsForCopy`
+  // output so Ctrl/Cmd+C copies the formatted plain text — including
+  // screenshot paths — rather than the rendered list (which would lose
+  // the `(screenshot: <path>)` segments and inline thumbnail markup that
+  // the in-memory format preserves).
   const handleCopyLogs = React.useCallback(async () => {
     if (logs.length === 0) return;
     const text = formatLogsForCopy(logs);
@@ -427,17 +425,53 @@ function FeatureDetailDialogImpl({
       }
       throw new Error("clipboard API unavailable");
     } catch {
-      const list = logsListRef.current;
-      if (list && typeof window !== "undefined") {
-        const range = document.createRange();
-        range.selectNodeContents(list);
-        const sel = window.getSelection();
-        sel?.removeAllRanges();
-        sel?.addRange(range);
-        toast.message("Logs selected — press Ctrl/Cmd+C to copy");
-      } else {
+      // Selection fallback. We seed an off-screen <textarea> with the
+      // formatted text and select it, so the user's Ctrl/Cmd+C copies the
+      // exact same string the clipboard API would have produced.
+      if (typeof document === "undefined" || typeof window === "undefined") {
         toast.error("Couldn't copy logs — clipboard unavailable");
+        return;
       }
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      // Visually hidden but still selectable. `aria-hidden` keeps SR users
+      // from announcing the staging element.
+      ta.setAttribute("readonly", "");
+      ta.setAttribute("aria-hidden", "true");
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      ta.style.pointerEvents = "none";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      // Best-effort exec; modern browsers have deprecated this but it still
+      // works in non-secure contexts where navigator.clipboard is missing.
+      let copied = false;
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      }
+      if (copied) {
+        // Clean up the staging element immediately on success — selection
+        // already lives on the system clipboard.
+        ta.remove();
+        toast.success(`Copied ${logs.length} log entries`);
+        return;
+      }
+      // execCommand refused (or threw). Leave the textarea in place with
+      // its contents selected so Ctrl/Cmd+C still grabs the formatted
+      // text. Schedule cleanup on the next selection-change so the
+      // hidden field doesn't linger forever.
+      const cleanup = () => {
+        ta.remove();
+        document.removeEventListener("selectionchange", cleanup);
+      };
+      document.addEventListener("selectionchange", cleanup);
+      toast.message("Logs selected — press Ctrl/Cmd+C to copy");
     }
   }, [logs]);
 
@@ -997,7 +1031,7 @@ function FeatureDetailDialogImpl({
                       data-testid="feature-detail-logs-list"
                       className="max-h-80 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed"
                     >
-                      <ul ref={logsListRef} className="space-y-1">
+                      <ul className="space-y-1">
                         {logs.map((log) => (
                           <li
                             key={log.id}

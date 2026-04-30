@@ -805,7 +805,7 @@ shares the same delete-then-refresh logic, intentionally duplicated
 - `app/globals.css` — new `.col-clear` class for the forge-aesthetic
   button (avoids inline styles per project rule).
 
-### Manual test plan (this iteration)
+### Manual test plan (first iteration)
 
 1. Open a project with at least one card in the Completed column.
 2. **Expect:** a "Clear" button (red, with a trash icon) appears in the
@@ -899,7 +899,7 @@ not yet wired for bulk-select; the active-project view is where users
 actually triage backlogs and where this UX matters first. A follow-up
 iteration can mirror the wiring there if desired.
 
-### Manual test plan (this iteration)
+### Manual test plan (second iteration)
 
 1. Open a project with cards in multiple columns.
 2. Click "Select" in the kanban header. **Expect:** button toggles to
