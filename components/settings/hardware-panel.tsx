@@ -53,10 +53,16 @@ function statusToTone(status: FitStatus): {
         label: "Tight — may offload to CPU",
       };
     case "wont-fit":
+      // ENH-005: Ollama can run an oversized model by offloading unfit layers
+      // to system RAM/CPU. The result is much slower (often 3-10 tok/s vs.
+      // 30-80 tok/s when fully on GPU) but still functional, especially for
+      // batch / overnight runs. So this is a trade-off warning, not a hard
+      // block — soft amber tone, copy explains the implication rather than
+      // commanding the user to switch.
       return {
         className:
-          "border-red-500/40 bg-red-500/10 text-red-700 dark:text-red-400",
-        label: "Won't fit — switch to a smaller model",
+          "border-orange-500/40 bg-orange-500/10 text-orange-700 dark:text-orange-400",
+        label: "Won't fit fully in VRAM",
       };
   }
 }
@@ -239,9 +245,16 @@ function ModelFitBanner({
         {memoryLabel.toLowerCase()} is{" "}
         <span className="font-mono">{formatGB(availableMB)}</span>.
       </p>
+      {status === "wont-fit" && (
+        <p className="mt-1">
+          Ollama will offload unfit layers to system RAM/CPU, so generation
+          will be significantly slower (often 3-10 tokens/sec). For faster
+          runs, pick a model that fits fully in VRAM.
+        </p>
+      )}
       {suggestions.length > 0 && (
         <p className="mt-1">
-          Suggested model sizes that fit:{" "}
+          Fully-fitting model sizes:{" "}
           <span className="font-mono">{suggestions.join(", ")}</span>
         </p>
       )}

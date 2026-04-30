@@ -829,7 +829,7 @@ triage rather than just resets.
 
 ## ENH-005 — Soften "Won't fit" warning to allow CPU spillover
 
-**Status:** PROPOSED (not yet implemented)
+**Status:** FIXED — pending live verification (2026-04-29)
 **Reported:** 2026-04-29
 **Severity:** Low (UX — discourages valid power-user choices)
 
@@ -855,32 +855,45 @@ by ENH-001 — same model output zero tool calls regardless of VRAM).
 The point stands: the runtime is functional even when the model
 doesn't fit in VRAM, so the warning shouldn't read like a hard block.
 
-### Proposed fix
+### Fix
 
-Replace the "switch to a smaller model" framing with one that explains
-the trade-off:
+Replaced the "switch to a smaller model" framing with copy that
+explains the trade-off and shifted the panel tone from red (error) to
+orange (warning), keeping it visually distinct from the existing
+yellow `tight` state.
+
+New copy:
 
 > **Won't fit fully in VRAM**
-> qwen2.5-coder:32b (32B) needs ≈ 20.5 GB at Q4, your VRAM is 8.0 GB.
-> Ollama will offload unfit layers to system RAM/CPU, so generation will
-> be significantly slower (often 3–10 tokens/sec). For faster runs, use
-> a model that fits in VRAM. Suggested fully-fitting sizes: 0-2B, 2-4B, 4-9B.
+> qwen2.5-coder:32b (32B) needs ≈ 20.5 GB at Q4 — your VRAM is 8.0 GB.
+> Ollama will offload unfit layers to system RAM/CPU, so generation
+> will be significantly slower (often 3-10 tokens/sec). For faster
+> runs, pick a model that fits fully in VRAM.
+> Fully-fitting model sizes: 0-2B, 2-4B, 4-9B
 
-The "Use best fit" button can stay — it's a reasonable shortcut. The
-panel border color could shift from red ("error") to amber ("warning").
+The "Use best fit" button stays — it's a reasonable shortcut.
 
-### Files that would change
+### Files changed
 
-- `components/settings/hardware-panel.tsx` (or wherever the warning copy
-  lives)
+- `components/settings/hardware-panel.tsx` — wont-fit branch in
+  `statusToTone()` now uses `border-orange-500/40 bg-orange-500/10
+  text-orange-700 dark:text-orange-400` and label `Won't fit fully in
+  VRAM`. `ModelFitBanner` adds a status-conditional explanatory
+  paragraph and renames the suggestions footer to `Fully-fitting
+  model sizes`.
 
 ### Manual test plan
 
-1. Configure a model that exceeds VRAM (e.g. `qwen2.5-coder:32b` on 8GB).
-2. Verify the new warning copy renders — yellow/amber, not red, and
-   names the trade-off explicitly.
-3. Click run queue and confirm the run still proceeds (i.e. the warning
-   does not block start).
+1. Configure a model that exceeds VRAM (e.g. `qwen2.5-coder:32b` on
+   an 8GB GPU).
+2. **Expect:** banner renders in orange (not red), title says "Won't
+   fit fully in VRAM", body explains CPU spillover and mentions the
+   typical 3-10 tok/s slowdown, footer lists fully-fitting sizes.
+3. Click run queue and confirm the run still proceeds — the banner is
+   informational, not a hard block.
+4. Configure a smaller model that exceeds budget into the `tight`
+   tier — verify the yellow `tight` banner still looks distinct from
+   the new orange `wont-fit` banner.
 
 ---
 
