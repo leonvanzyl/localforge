@@ -613,7 +613,7 @@ situation and naming the recommended remediation.
 
 ## ENH-002 — Add "copy logs to clipboard" button to feature detail dialog
 
-**Status:** PROPOSED (not yet implemented)
+**Status:** FIXED — pending live verification (2026-04-29)
 **Reported:** 2026-04-29
 **Severity:** Low (DX — currently users must manually select and copy log
 text to share or file an issue)
@@ -626,33 +626,49 @@ report), the user has to click-drag-select across multiple log lines and
 fight the surrounding modal's scroll/focus behaviour. There's no one-click
 way to grab all logs for a feature.
 
-### Proposed fix
+### Fix
 
-Add a small clipboard-icon button in the agent-log section header of
-`components/kanban/feature-detail-dialog.tsx`. On click:
+Added a "Copy logs" button next to the "Agent activity" label header in
+the feature detail dialog. The button:
 
-1. Concatenate all log entries for the current feature into plain text:
-   one entry per line, format `HH:MM:SS  [type]  message` (with screenshot
-   paths inlined when present).
-2. Call `navigator.clipboard.writeText(...)`.
-3. Show a transient "Copied" confirmation (Sonner toast, ~2s).
-4. If `navigator.clipboard` is unavailable (rare — non-secure context),
-   fall back to selecting the log text via `Range` + `Selection` so the
-   user can hit Ctrl+C.
+1. Concatenates all log entries for the current feature into plain
+   text via a new `formatLogsForCopy()` helper. Format per line:
+   `HH:MM:SS  [TYPE]  message`, with `(screenshot: <path>)` appended
+   when a log row has a screenshot, so screenshot evidence isn't lost
+   when pasted elsewhere.
+2. Tries `navigator.clipboard.writeText(text)` first; on success shows
+   a sonner success toast (`Copied N log entries`).
+3. Falls back to selecting the rendered `<ul>` via `Range` +
+   `Selection` when the Clipboard API is unavailable (insecure
+   context, permissions blocked, or older browser). Surfaces a
+   different toast (`Logs selected — press Ctrl/Cmd+C to copy`) so
+   the user knows what to do next.
+4. Hidden when there are no logs to copy.
 
-### Files that would change
+### Files changed
 
 - `components/kanban/feature-detail-dialog.tsx`
+  - Imported `ClipboardCopy` from lucide-react and `toast` from sonner.
+  - Added `formatLogsForCopy(logs)` helper.
+  - Added `logsListRef` (`React.useRef<HTMLUListElement>`) used by the
+    selection fallback; attached to the `<ul>` that renders log entries.
+  - Added `handleCopyLogs` callback wired to the new button.
+  - New `<Button variant="ghost" size="sm">` rendered in a flex row
+    next to the "Agent activity" label, gated on `logs.length > 0`.
 
 ### Manual test plan
 
 1. Open a feature with several log entries.
-2. Click the new "Copy logs" button.
-3. **Expect:** transient confirmation toast.
+2. Click "Copy logs".
+3. **Expect:** sonner success toast `Copied N log entries`.
 4. Paste into a text editor — expect one log entry per line in
-   chronological order with timestamps and message-type tags.
-5. Test in an insecure context (e.g. open via raw IP) — expect the
-   fallback selection path to work.
+   chronological order with `HH:MM:SS  [TYPE]  message` formatting and
+   a `(screenshot: ...)` suffix on rows that have screenshots.
+5. Open a feature with no logs — the button should be hidden.
+6. Test in an insecure context (e.g. open via raw IP / non-localhost
+   without HTTPS) — clipboard API unavailable → expect the selection
+   fallback toast `Logs selected — press Ctrl/Cmd+C to copy` and the
+   logs list visibly highlighted, so Ctrl/Cmd+C works.
 
 ---
 

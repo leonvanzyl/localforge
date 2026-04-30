@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   ChevronLeft,
   ChevronRight,
+  ClipboardCopy,
   Images,
   Loader2,
   Link2,
@@ -11,6 +12,7 @@ import {
   Trash2,
   X as XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -66,6 +68,26 @@ function resolveScreenshotUrl(raw: string): string {
   const trimmed = raw.replace(/^\/+/, "");
   const stripped = trimmed.replace(/^screenshots\//, "");
   return `/api/screenshots/${stripped}`;
+}
+
+/**
+ * ENH-002: Render the in-memory logs list as plain text the user can paste
+ * into an issue, Slack, or a teammate's chat. One entry per line:
+ *   `HH:MM:SS  [TYPE]  message`
+ * with a trailing `(screenshot: <path>)` segment when the log has an
+ * associated screenshot, so screenshot evidence isn't lost in the paste.
+ */
+function formatLogsForCopy(logs: AgentLogEntry[]): string {
+  return logs
+    .map((log) => {
+      const time = formatLogTime(log.createdAt);
+      const type = log.messageType.toUpperCase();
+      const tail = log.screenshotPath
+        ? `  (screenshot: ${log.screenshotPath})`
+        : "";
+      return `${time}  [${type}]  ${log.message}${tail}`;
+    })
+    .join("\n");
 }
 
 function formatLogTime(iso: string): string {
@@ -142,6 +164,10 @@ function FeatureDetailDialogImpl({
   const [depPick, setDepPick] = React.useState<string>("");
 
   const [logs, setLogs] = React.useState<AgentLogEntry[]>([]);
+  // ENH-002: ref onto the logs list <ul> so the clipboard fallback can
+  // select its text via Range + Selection when navigator.clipboard is
+  // unavailable (insecure context, browser permissions blocked, etc.).
+  const logsListRef = React.useRef<HTMLUListElement | null>(null);
   const [logsLoading, setLogsLoading] = React.useState(false);
   const [logsError, setLogsError] = React.useState<string | null>(null);
 
@@ -379,6 +405,41 @@ function FeatureDetailDialogImpl({
   const closeLightbox = React.useCallback(() => {
     setLightboxIndex(null);
   }, []);
+
+  // ENH-002: copy the current feature's agent activity log to the clipboard
+  // as plain text. Tries `navigator.clipboard.writeText` first; on failure
+  // (insecure context, permissions blocked, missing API) falls back to
+  // selecting the rendered <ul> via Range + Selection so the user can
+  // press Ctrl/Cmd+C themselves. Both paths surface a sonner toast so
+  // the user always gets feedback.
+  const handleCopyLogs = React.useCallback(async () => {
+    if (logs.length === 0) return;
+    const text = formatLogsForCopy(logs);
+    try {
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === "function"
+      ) {
+        await navigator.clipboard.writeText(text);
+        toast.success(`Copied ${logs.length} log entries`);
+        return;
+      }
+      throw new Error("clipboard API unavailable");
+    } catch {
+      const list = logsListRef.current;
+      if (list && typeof window !== "undefined") {
+        const range = document.createRange();
+        range.selectNodeContents(list);
+        const sel = window.getSelection();
+        sel?.removeAllRanges();
+        sel?.addRange(range);
+        toast.message("Logs selected — press Ctrl/Cmd+C to copy");
+      } else {
+        toast.error("Couldn't copy logs — clipboard unavailable");
+      }
+    }
+  }, [logs]);
 
   // Feature #79: keyboard navigation inside the lightbox.
   //   Esc        — close the lightbox (NOT the parent dialog)
@@ -867,13 +928,36 @@ function FeatureDetailDialogImpl({
                   className="space-y-2"
                   data-testid="feature-detail-logs-section"
                 >
-                  <label className="flex items-center gap-1 text-sm font-medium text-foreground">
-                    <TerminalSquare
-                      className="h-3.5 w-3.5"
-                      aria-hidden="true"
-                    />
-                    Agent activity
-                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="flex items-center gap-1 text-sm font-medium text-foreground">
+                      <TerminalSquare
+                        className="h-3.5 w-3.5"
+                        aria-hidden="true"
+                      />
+                      Agent activity
+                    </label>
+                    {/* ENH-002: one-click copy of the entire logs section as
+                        plain text, so users can paste into issues / chats
+                        without click-dragging across the modal. Hidden when
+                        there are no logs to copy. */}
+                    {logs.length > 0 && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={handleCopyLogs}
+                        data-testid="feature-detail-copy-logs"
+                        aria-label="Copy agent logs to clipboard"
+                        className="h-7 gap-1 px-2 text-xs"
+                      >
+                        <ClipboardCopy
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                        Copy logs
+                      </Button>
+                    )}
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     Messages captured during coding-agent sessions that worked
                     on this feature. Logs persist across sessions and server
@@ -913,7 +997,7 @@ function FeatureDetailDialogImpl({
                       data-testid="feature-detail-logs-list"
                       className="max-h-80 overflow-y-auto rounded-md border border-border bg-muted/30 p-2 font-mono text-[11px] leading-relaxed"
                     >
-                      <ul className="space-y-1">
+                      <ul ref={logsListRef} className="space-y-1">
                         {logs.map((log) => (
                           <li
                             key={log.id}
