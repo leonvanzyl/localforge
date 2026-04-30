@@ -823,23 +823,106 @@ shares the same delete-then-refresh logic, intentionally duplicated
 8. Open both the celebration-view kanban and the active-project kanban —
    confirm the button renders consistently in both.
 
-### Future iteration (still proposed, not in this PR)
+### Future iteration — second iteration shipped (2026-04-29)
 
-Add a richer bulk-select mode:
+The original future-iteration spec called for:
 
-1. A "Select" toggle in the kanban header switches each card into a state
-   with a checkbox in the corner.
+1. A "Select" toggle in the kanban header that switches each card into
+   a state with a checkbox in the corner.
 2. Selecting one or more cards reveals a sticky action bar with
    "Delete N selected" and "Cancel" buttons.
-3. Confirming triggers a bulk DELETE — either via a new
-   `DELETE /api/projects/[id]/features` endpoint accepting an `ids[]`
-   array, or by issuing parallel single-feature DELETEs from the client.
-4. Optional: also offer "Skip N selected" (move to end of queue) and
-   "Set status..." actions.
+3. Confirming triggers a bulk DELETE.
+4. Optional: also offer "Skip N selected" / "Set status..." actions.
 
-This builds on the column-scoped Clear shipped in this PR but generalises
-across all three columns and arbitrary subsets, suitable for backlog
-triage rather than just resets.
+**Status:** FIXED — pending live verification (2026-04-29). Items 1-3
+are implemented; item 4 (skip / set-status) is not yet shipped — the
+delete path is the most common case and a clean surface to start with.
+
+### Fix (second iteration)
+
+Implemented in `components/forge/forge-kanban.tsx` — the active project
+kanban. Decision: the bulk DELETE is issued client-side as N parallel
+`DELETE /api/features/:id` calls, mirroring the existing
+`handleClearCompleted` pattern. No new server endpoint needed.
+
+Behaviour:
+
+- **Header toggle** — a "Select" button next to the filter input flips
+  the kanban into bulk-select mode. The button label switches to "Done"
+  while active, and `aria-pressed` reflects the state.
+- **Per-card checkbox** — each card renders a small `☐`/`☑` glyph in
+  the top-right corner. The card itself becomes the click target —
+  clicking toggles selection rather than opening the detail dialog.
+  The `aria-label` swaps between `Open feature: <title>` and
+  `Deselect feature: <title>` so screen readers announce the new
+  affordance.
+- **Drag disabled in select mode** — `useSortable({ disabled: true })`
+  plus skipping the drag attribute/listener spread on the wrapper, so
+  dnd-kit doesn't intercept clicks on checkboxes. Drag resumes
+  automatically when select mode is turned off.
+- **Sticky action bar** — anchored to the bottom of the
+  `.board-section` via `position: sticky`. Visible only when
+  `selectMode && selectedIds.size > 0`. Shows the count, a Cancel
+  button (exits select mode and clears the selection), and a Delete
+  button styled with the bad-state colour.
+- **Re-entrancy guard** — `bulkDeleteInFlightRef` matches the
+  `clearCompletedInFlightRef` pattern from iteration 1, preventing
+  back-to-back clicks from firing duplicate batches.
+- **Failure surfacing** — first failure flows through the existing
+  `dragError` channel; the rest of the deletes still complete via
+  `Promise.allSettled`, and a re-fetch reflects whatever did get
+  deleted.
+
+### Files changed (this iteration)
+
+- `components/forge/forge-kanban.tsx`
+  - Added `selectMode`, `selectedIds`, `bulkDeleteInFlightRef` state
+    plus `toggleSelectMode` / `toggleSelectedId` callbacks.
+  - Added `handleBulkDelete` (parallel `Promise.allSettled` DELETEs).
+  - Threaded `selectMode` / `selected` / `onToggleSelect` through
+    `DroppableForgeColumn` → `SortableForgeCard` → `ForgeCard`.
+  - `SortableForgeCard` now passes `disabled: selectMode` to
+    `useSortable` and skips the drag attribute/listener spread when
+    select mode is on.
+  - `ForgeCard` renders the `.card-checkbox` glyph and applies the
+    `.card.selected` state class while in select mode.
+  - Added the "Select"/"Done" toggle button in the board header and
+    the sticky `.fkb-select-bar` action bar at the bottom of the
+    section.
+- `app/globals.css`
+  - New `.card-checkbox`, `.card.selected`, `.fkb-select-bar`,
+    `.fkb-select-count`, `.fkb-select-bar-actions`, and `.btn.sm.danger`
+    rules. No inline styles — all visual state lives here.
+
+The celebration-view kanban (`components/kanban/kanban-board.tsx`) is
+not yet wired for bulk-select; the active-project view is where users
+actually triage backlogs and where this UX matters first. A follow-up
+iteration can mirror the wiring there if desired.
+
+### Manual test plan (this iteration)
+
+1. Open a project with cards in multiple columns.
+2. Click "Select" in the kanban header. **Expect:** button toggles to
+   "Done"; every card shows a `☐` glyph in the top-right; cards are no
+   longer draggable.
+3. Click two or three cards across different columns. **Expect:** each
+   card flips to the selected state (border + box-shadow accent, glyph
+   becomes `☑`); a sticky bar appears at the bottom showing the count.
+4. Click "Cancel" in the sticky bar. **Expect:** select mode exits;
+   selection clears; cards are draggable again; sticky bar gone.
+5. Re-enter select mode, select two cards, click "Delete N selected".
+   **Expect:** native confirm naming the count. Accept. **Expect:**
+   selected cards disappear; select mode exits; remaining cards
+   intact; reload preserves the deletion.
+6. Re-enter select mode, select cards, then click "Done" in the
+   header (without using the sticky bar). **Expect:** select mode
+   exits and selection is cleared (no accidental delete).
+7. Trigger a forced 5xx on one of the DELETEs. **Expect:** the first
+   failure surfaces in the kanban error banner; the other deletes
+   still complete; selection is cleared and select mode exits even
+   on partial failure.
+8. While select mode is on, try to drag a card. **Expect:** drag is
+   blocked; click toggles selection instead.
 
 ---
 

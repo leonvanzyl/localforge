@@ -475,6 +475,35 @@
 .col-clear:hover { background: var(--bad); color: var(--panel); }
 .col-clear:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }
 
+/* ENH-004 broader: bulk-select mode. The kanban-header "Select" toggle
+   flips cards into selection mode — they show a corner checkbox glyph,
+   clicks toggle selection, and a sticky action bar at the bottom of
+   the .board-section reveals once at least one card is selected. */
+.card-checkbox {
+  position: absolute; top: 6px; right: 8px;
+  font-size: 14px; line-height: 1; color: var(--ink-2);
+  pointer-events: none; -webkit-user-select: none; user-select: none;
+}
+.card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), var(--shadow);
+}
+.card.selected .card-checkbox { color: var(--accent); }
+
+.fkb-select-bar {
+  position: sticky; bottom: 8px; margin-top: 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 14px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  z-index: 5;
+}
+.fkb-select-count { color: var(--ink-2); }
+.fkb-select-bar-actions { display: flex; gap: 8px; align-items: center; }
+.btn.sm.danger { color: var(--bad); border-color: var(--bad); }
+.btn.sm.danger:hover { background: var(--bad); color: var(--panel); }
+
 .col-body { flex: 1; padding: 2px; display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
 
 .card {

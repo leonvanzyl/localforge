@@ -109,12 +109,18 @@ function ForgeCard({
   isRunning,
   featureNumber,
   onClick,
+  selectMode,
+  selected,
 }: {
   feature: FeatureCardData;
   isDragging?: boolean;
   isRunning?: boolean;
   featureNumber?: number | null;
   onClick?: () => void;
+  /** ENH-004 broader: when true, render a checkbox overlay and treat
+   *  clicks as selection toggles rather than detail-open events. */
+  selectMode?: boolean;
+  selected?: boolean;
 }) {
   const tr = feature.testResult ?? null;
 
@@ -123,15 +129,24 @@ function ForgeCard({
       className={
         "card" +
         (isRunning ? " running" : "") +
-        (isDragging ? " dragging" : "")
+        (isDragging ? " dragging" : "") +
+        (selectMode && selected ? " selected" : "")
       }
       data-testid={`feature-card-${feature.id}`}
       data-feature-id={feature.id}
       data-status={feature.status}
       data-priority={feature.priority}
+      data-selected={selectMode && selected ? "true" : undefined}
       onClick={onClick}
       role={onClick ? "button" : undefined}
       tabIndex={onClick ? 0 : undefined}
+      aria-label={
+        onClick
+          ? selectMode
+            ? `${selected ? "Deselect" : "Select"} feature: ${feature.title}`
+            : `Open feature: ${feature.title}`
+          : undefined
+      }
       onKeyDown={
         onClick
           ? (e) => {
@@ -143,6 +158,15 @@ function ForgeCard({
           : undefined
       }
     >
+      {selectMode && (
+        <span
+          className="card-checkbox"
+          data-testid={`feature-card-checkbox-${feature.id}`}
+          aria-hidden="true"
+        >
+          {selected ? "☑" : "☐"}
+        </span>
+      )}
       <div className="card-title">{feature.title}</div>
       <div className="card-meta">
         <span className="tag">
@@ -182,10 +206,19 @@ function SortableForgeCard({
   feature,
   featureNumber,
   onOpen,
+  selectMode,
+  selected,
+  onToggleSelect,
 }: {
   feature: FeatureCardData;
   featureNumber?: number | null;
   onOpen?: (id: number) => void;
+  /** ENH-004 broader: when true, swap the card's click target from
+   *  detail-open to selection-toggle, and disable drag so dnd-kit
+   *  doesn't intercept clicks on the checkbox. */
+  selectMode?: boolean;
+  selected?: boolean;
+  onToggleSelect?: (id: number) => void;
 }) {
   const {
     attributes,
@@ -197,6 +230,7 @@ function SortableForgeCard({
   } = useSortable({
     id: feature.id,
     data: { feature },
+    disabled: selectMode,
   });
 
   const style: React.CSSProperties = {
@@ -204,6 +238,17 @@ function SortableForgeCard({
     transition,
     opacity: isDragging ? 0.4 : 1,
   };
+
+  // In select mode, route the card click to the selection toggle
+  // instead of opening the detail dialog. Outside select mode we keep
+  // the original detail-open behaviour.
+  const clickHandler = selectMode
+    ? onToggleSelect
+      ? () => onToggleSelect(feature.id)
+      : undefined
+    : onOpen
+      ? () => onOpen(feature.id)
+      : undefined;
 
   return (
     <div
@@ -213,15 +258,17 @@ function SortableForgeCard({
       data-dragging={isDragging ? "true" : "false"}
       data-feature-card-anchor={feature.id}
       className="touch-none"
-      {...attributes}
-      {...listeners}
+      {...(selectMode ? {} : attributes)}
+      {...(selectMode ? {} : listeners)}
     >
       <ForgeCard
         feature={feature}
         isDragging={isDragging}
         isRunning={feature.status === "in_progress"}
         featureNumber={featureNumber}
-        onClick={onOpen ? () => onOpen(feature.id) : undefined}
+        onClick={clickHandler}
+        selectMode={selectMode}
+        selected={selected}
       />
     </div>
   );
@@ -239,6 +286,9 @@ function DroppableForgeColumn({
   onAdd,
   onOpen,
   onClearCompleted,
+  selectMode,
+  selectedIds,
+  onToggleSelect,
 }: {
   col: ColumnDef;
   items: FeatureCardData[];
@@ -253,6 +303,11 @@ function DroppableForgeColumn({
    * delete logic.
    */
   onClearCompleted?: () => void;
+  /** ENH-004 broader: forwarded to each card so they can render their
+   *  selection state and toggle on click while bulk-select mode is on. */
+  selectMode?: boolean;
+  selectedIds?: ReadonlySet<number>;
+  onToggleSelect?: (id: number) => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.id });
 
@@ -319,6 +374,9 @@ function DroppableForgeColumn({
                 feature={f}
                 featureNumber={featureNumbers.get(f.id) ?? null}
                 onOpen={onOpen}
+                selectMode={selectMode}
+                selected={selectedIds?.has(f.id) ?? false}
+                onToggleSelect={onToggleSelect}
               />
             ))
           )}
@@ -376,6 +434,39 @@ export function ForgeKanban({
   // resolves. Without this, each click fires a fresh batch against the
   // same ids and surfaces misleading 404 errors from the second wave.
   const clearCompletedInFlightRef = React.useRef(false);
+
+  // ENH-004 broader: bulk-select mode. When `selectMode` is true cards
+  // gain a checkbox overlay and clicking toggles selection instead of
+  // opening the detail dialog; drag is disabled so the user can tap
+  // checkboxes freely without dnd-kit intercepting the click. Confirming
+  // the sticky action bar fires N parallel DELETE /api/features/:id
+  // requests through the existing single-feature endpoint — same shape
+  // as `handleClearCompleted`, no new server endpoint needed.
+  const [selectMode, setSelectMode] = React.useState(false);
+  const [selectedIds, setSelectedIds] = React.useState<Set<number>>(
+    () => new Set<number>(),
+  );
+  const bulkDeleteInFlightRef = React.useRef(false);
+
+  const toggleSelectMode = React.useCallback(() => {
+    setSelectMode((on) => {
+      if (on) {
+        // Leaving select mode — drop any pending selection so reopening
+        // doesn't resurrect a stale set.
+        setSelectedIds(new Set<number>());
+      }
+      return !on;
+    });
+  }, []);
+
+  const toggleSelectedId = React.useCallback((id: number) => {
+    setSelectedIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }, []);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -493,6 +584,60 @@ export function ForgeKanban({
       clearCompletedInFlightRef.current = false;
     }
   }, [state, load]);
+
+  /**
+   * ENH-004 broader: delete every currently-selected card. Same delete-
+   * then-refresh shape as `handleClearCompleted` — re-entrancy guarded,
+   * confirm naming the count, parallel DELETEs via Promise.allSettled,
+   * first failure surfaced through `dragError`. Also exits select mode
+   * after a successful run so the user is back in the regular drag
+   * flow.
+   */
+  const handleBulkDelete = React.useCallback(async () => {
+    if (state.kind !== "ready") return;
+    if (bulkDeleteInFlightRef.current) return;
+    if (selectedIds.size === 0) return;
+    const ids = Array.from(selectedIds);
+    const confirmed = window.confirm(
+      `Delete ${ids.length} selected ${
+        ids.length === 1 ? "feature" : "features"
+      }? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    bulkDeleteInFlightRef.current = true;
+    setDragError(null);
+    try {
+      const results = await Promise.allSettled(
+        ids.map((id) =>
+          fetch(`/api/features/${id}`, { method: "DELETE" }).then(
+            async (res) => {
+              if (!res.ok) {
+                const data = (await res.json().catch(() => ({}))) as {
+                  error?: string;
+                };
+                throw new Error(data.error || `Delete failed (${res.status})`);
+              }
+            },
+          ),
+        ),
+      );
+      const firstFailure = results.find(
+        (r): r is PromiseRejectedResult => r.status === "rejected",
+      );
+      if (firstFailure) {
+        setDragError(
+          firstFailure.reason instanceof Error
+            ? firstFailure.reason.message
+            : "Failed to delete some selected features",
+        );
+      }
+      setSelectedIds(new Set<number>());
+      setSelectMode(false);
+      await load();
+    } finally {
+      bulkDeleteInFlightRef.current = false;
+    }
+  }, [state, selectedIds, load]);
 
   /* --- Drag handlers --- */
 
@@ -701,6 +846,21 @@ export function ForgeKanban({
                 data-testid="forge-kanban-filter"
               />
             </div>
+            {/* ENH-004 broader: bulk-select toggle. Off → cards open the
+                detail dialog on click and drag normally. On → cards show
+                a checkbox, clicking toggles selection, drag is disabled,
+                and the sticky bar at the bottom of the section appears
+                once at least one card is selected. */}
+            <button
+              type="button"
+              className={"btn sm" + (selectMode ? " primary" : "")}
+              onClick={toggleSelectMode}
+              data-testid="forge-kanban-select-toggle"
+              data-select-mode={selectMode ? "true" : "false"}
+              aria-pressed={selectMode ? "true" : "false"}
+            >
+              {selectMode ? "Done" : "Select"}
+            </button>
           </div>
         </div>
 
@@ -730,6 +890,9 @@ export function ForgeKanban({
                 onClearCompleted={
                   col.id === "completed" ? handleClearCompleted : undefined
                 }
+                selectMode={selectMode}
+                selectedIds={selectedIds}
+                onToggleSelect={toggleSelectedId}
               />
             ))}
           </div>
@@ -759,6 +922,45 @@ export function ForgeKanban({
           >
             {dragError}
           </p>
+        )}
+
+        {/* ENH-004 broader: sticky action bar. Visible only while
+            select mode is on AND at least one card has been selected.
+            Sits inside the `.board-section` so it stays anchored to the
+            kanban view and doesn't follow the user when they scroll into
+            the agent pods area above. */}
+        {selectMode && selectedIds.size > 0 && (
+          <div
+            className="fkb-select-bar"
+            data-testid="forge-kanban-bulk-bar"
+            role="region"
+            aria-label="Bulk selection actions"
+          >
+            <span className="fkb-select-count">
+              {selectedIds.size} selected
+            </span>
+            <div className="fkb-select-bar-actions">
+              <button
+                type="button"
+                className="btn sm"
+                onClick={toggleSelectMode}
+                data-testid="forge-kanban-bulk-cancel"
+              >
+                Cancel
+              </button>
+              <button
+                type="button"
+                className="btn sm danger"
+                onClick={handleBulkDelete}
+                data-testid="forge-kanban-bulk-delete"
+                aria-label={`Delete ${selectedIds.size} selected ${
+                  selectedIds.size === 1 ? "feature" : "features"
+                }`}
+              >
+                Delete {selectedIds.size} selected
+              </button>
+            </div>
+          </div>
         )}
       </section>
 
