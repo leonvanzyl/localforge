@@ -7,12 +7,21 @@
 ### 1. Prerequisites
 
 - **Node.js 20+** — [download here](https://nodejs.org/)
-- **LM Studio** — [download here](https://lmstudio.ai/)
+- **A local model server**, either:
+  - **LM Studio** — [download here](https://lmstudio.ai/) (default port `1234`)
+  - **Ollama** — [download here](https://ollama.com/) (default port `11434`)
 
-### 2. Set up LM Studio
+### 2. Set up your local model server
 
-1. Open LM Studio and download a model (e.g. `google/gemma-4-31b`)
+**LM Studio:**
+
+1. Open LM Studio and download a model
 2. Load the model and start the local API server (default: `http://127.0.0.1:1234`)
+
+**Ollama:**
+
+1. `ollama pull <model>` — see [Model selection](#model-selection) below for tested choices
+2. Ollama runs as a service on `http://127.0.0.1:11434` automatically
 
 ### 3. Install and run LocalForge
 
@@ -64,6 +73,7 @@ kanban board, and deploys agents to implement and test them one at a time.
 | `npm start` | Start production server |
 | `npm run db:generate` | Generate a Drizzle migration from schema changes |
 | `npm run db:migrate` | Apply pending migrations |
+| `npm run lint` | Run ESLint over the repo |
 | `npm test` | Run Playwright tests |
 
 ## Tech stack
@@ -94,6 +104,45 @@ tests/               Playwright specs
 Per-project model config is stored in `.pi/models.json` inside each project folder.
 Override per project via project settings, or globally via **Settings** in the sidebar.
 
+## Model selection
+
+LocalForge uses the local model's tool-calling support to drive a coding agent.
+That capability varies a lot between models — and not every locally-runnable
+model handles it correctly. Three classes:
+
+- **Tool-call broken (do not use):** any model whose Ollama chat template
+  doesn't emit structured `tool_calls`, or that ships without tool support
+  at all (e.g. `gemma3:*`, `gemma2:*`, `phi3:mini`). LocalForge will detect
+  this on the first failed attempt and pause the feature with a guidance
+  message — no infinite retry loops — but you'll need to switch models to
+  make progress.
+- **Tool-call works, incremental edits unreliable:** smaller code models
+  on Ollama like `qwen2.5-coder:7b`, `llama3.1:8b`, `llama3.2:latest`. They
+  can run a one-shot scaffold (`npx create-next-app .`) but tend to read
+  files and "claim done" without writing follow-up changes. LocalForge's
+  workspace-fingerprint guard catches this and demotes the feature
+  honestly rather than reporting fake progress, but the larger backlog
+  will not finish on these models alone.
+- **Tool-call works, multi-step works:** larger code-specialised models or
+  frontier-tier models. Locally, this means 30B+ code models and they
+  typically need real GPU horsepower. `gpt-oss:20b` does the structured
+  tool-call format correctly but still struggles with incremental edits;
+  it works best for one-shot scaffold steps.
+
+For a practical first run on consumer hardware, we recommend keeping the
+backlog small and atomic (one bash command or one file write per feature)
+and pulling a code-specialised model that fits in your VRAM at Q4. The
+example backlog shipped under `docs/example-app-features.json` follows
+this pattern.
+
+If a model emits JSON-shaped tool calls in plain assistant text instead of
+structured `tool_calls`, the harness will surface a clear "agent claimed
+success without invoking any tools" error — that's the signal to switch.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.
+
+## Support
+
+If this project helps you, you can support DreamForge Academy here: [Buy Me a Coffee](https://buymeacoffee.com/dreamforgeacademy).

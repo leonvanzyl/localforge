@@ -4,6 +4,7 @@ import * as React from "react";
 import {
   ChevronLeft,
   ChevronRight,
+  ClipboardCopy,
   Images,
   Loader2,
   Link2,
@@ -11,6 +12,7 @@ import {
   Trash2,
   X as XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -68,6 +70,26 @@ function resolveScreenshotUrl(raw: string): string {
   return `/api/screenshots/${stripped}`;
 }
 
+/**
+ * ENH-002: Render the in-memory logs list as plain text the user can paste
+ * into an issue, Slack, or a teammate's chat. One entry per line:
+ *   `HH:MM:SS  [TYPE]  message`
+ * with a trailing `(screenshot: <path>)` segment when the log has an
+ * associated screenshot, so screenshot evidence isn't lost in the paste.
+ */
+function formatLogsForCopy(logs: AgentLogEntry[]): string {
+  return logs
+    .map((log) => {
+      const time = formatLogTime(log.createdAt);
+      const type = log.messageType.toUpperCase();
+      const tail = log.screenshotPath
+        ? `  (screenshot: ${log.screenshotPath})`
+        : "";
+      return `${time}  [${type}]  ${log.message}${tail}`;
+    })
+    .join("\n");
+}
+
 function formatLogTime(iso: string): string {
   // Logs come back as either ISO or SQLite `YYYY-MM-DD HH:MM:SS`. Normalize
   // the SQLite variant by swapping the space for a T so Date.parse works
@@ -98,15 +120,7 @@ function formatLogTime(iso: string): string {
  * (separately) POST /api/features/:id/dependencies with the full new set.
  * On success the parent re-fetches the feature list so the kanban updates.
  */
-export function FeatureDetailDialog({
-  open,
-  featureId,
-  projectId,
-  onOpenChange,
-  onSaved,
-  onDeleted,
-  allFeatures,
-}: {
+type FeatureDetailDialogProps = {
   open: boolean;
   featureId: number | null;
   projectId: number;
@@ -119,7 +133,17 @@ export function FeatureDetailDialog({
    */
   onDeleted?: (featureId: number) => void;
   allFeatures: DetailFeature[];
-}) {
+};
+
+function FeatureDetailDialogImpl({
+  open,
+  featureId,
+  projectId,
+  onOpenChange,
+  onSaved,
+  onDeleted,
+  allFeatures,
+}: FeatureDetailDialogProps) {
   const [feature, setFeature] = React.useState<DetailFeature | null>(null);
   const [title, setTitle] = React.useState("");
   const [description, setDescription] = React.useState("");
@@ -300,6 +324,30 @@ export function FeatureDetailDialog({
     );
   }, [allFeatures, feature, deps]);
 
+  /**
+   * "Feature X of Y" header position. The kanban parent re-renders this
+   * dialog on every SSE event (the agent emits one every few hundred ms
+   * during a run), and an unmemoised `[...allFeatures].sort().findIndex()`
+   * on every keystroke is expensive enough to cause visible typing lag in
+   * the description / acceptance-criteria textareas. We key the memo on a
+   * derived id-list string so it only recomputes when features are
+   * actually added/removed/reordered — not when an unrelated field updates.
+   */
+  const idsKey = React.useMemo(
+    () => allFeatures.map((f) => f.id).join(","),
+    [allFeatures],
+  );
+  const featureNumber = React.useMemo(() => {
+    if (!feature) return null;
+    const sortedIds = idsKey
+      .split(",")
+      .filter((s) => s.length > 0)
+      .map((s) => Number(s))
+      .sort((a, b) => a - b);
+    const idx = sortedIds.indexOf(feature.id);
+    return idx >= 0 ? idx + 1 : null;
+  }, [feature, idsKey]);
+
   const depDetails = React.useMemo(() => {
     return deps
       .map((id) => allFeatures.find((f) => f.id === id))
@@ -353,6 +401,79 @@ export function FeatureDetailDialog({
   const closeLightbox = React.useCallback(() => {
     setLightboxIndex(null);
   }, []);
+
+  // ENH-002: copy the current feature's agent activity log to the clipboard
+  // as plain text. Tries `navigator.clipboard.writeText` first; on failure
+  // (insecure context, permissions blocked, missing API) falls back to
+  // selecting a hidden textarea seeded with the same `formatLogsForCopy`
+  // output so Ctrl/Cmd+C copies the formatted plain text — including
+  // screenshot paths — rather than the rendered list (which would lose
+  // the `(screenshot: <path>)` segments and inline thumbnail markup that
+  // the in-memory format preserves).
+  const handleCopyLogs = React.useCallback(async () => {
+    if (logs.length === 0) return;
+    const text = formatLogsForCopy(logs);
+    try {
+      if (
+        typeof navigator !== "undefined" &&
+        navigator.clipboard &&
+        typeof navigator.clipboard.writeText === "function"
+      ) {
+        await navigator.clipboard.writeText(text);
+        toast.success(`Copied ${logs.length} log entries`);
+        return;
+      }
+      throw new Error("clipboard API unavailable");
+    } catch {
+      // Selection fallback. We seed an off-screen <textarea> with the
+      // formatted text and select it, so the user's Ctrl/Cmd+C copies the
+      // exact same string the clipboard API would have produced.
+      if (typeof document === "undefined" || typeof window === "undefined") {
+        toast.error("Couldn't copy logs — clipboard unavailable");
+        return;
+      }
+      const ta = document.createElement("textarea");
+      ta.value = text;
+      // Visually hidden but still selectable. `aria-hidden` keeps SR users
+      // from announcing the staging element.
+      ta.setAttribute("readonly", "");
+      ta.setAttribute("aria-hidden", "true");
+      ta.style.position = "fixed";
+      ta.style.top = "0";
+      ta.style.left = "0";
+      ta.style.opacity = "0";
+      ta.style.pointerEvents = "none";
+      document.body.appendChild(ta);
+      ta.focus();
+      ta.select();
+      ta.setSelectionRange(0, text.length);
+      // Best-effort exec; modern browsers have deprecated this but it still
+      // works in non-secure contexts where navigator.clipboard is missing.
+      let copied = false;
+      try {
+        copied = document.execCommand("copy");
+      } catch {
+        copied = false;
+      }
+      if (copied) {
+        // Clean up the staging element immediately on success — selection
+        // already lives on the system clipboard.
+        ta.remove();
+        toast.success(`Copied ${logs.length} log entries`);
+        return;
+      }
+      // execCommand refused (or threw). Leave the textarea in place with
+      // its contents selected so Ctrl/Cmd+C still grabs the formatted
+      // text. Schedule cleanup on the next selection-change so the
+      // hidden field doesn't linger forever.
+      const cleanup = () => {
+        ta.remove();
+        document.removeEventListener("selectionchange", cleanup);
+      };
+      document.addEventListener("selectionchange", cleanup);
+      toast.message("Logs selected — press Ctrl/Cmd+C to copy");
+    }
+  }, [logs]);
 
   // Feature #79: keyboard navigation inside the lightbox.
   //   Esc        — close the lightbox (NOT the parent dialog)
@@ -548,12 +669,8 @@ export function FeatureDetailDialog({
         >
           <DialogHeader>
             <DialogTitle id="feature-detail-title">
-              {feature
-                ? `Feature ${
-                    [...allFeatures]
-                      .sort((a, b) => a.id - b.id)
-                      .findIndex((f) => f.id === feature.id) + 1
-                  } of ${allFeatures.length}`
+              {feature && featureNumber !== null
+                ? `Feature ${featureNumber} of ${allFeatures.length}`
                 : "Feature details"}
             </DialogTitle>
           </DialogHeader>
@@ -750,6 +867,7 @@ export function FeatureDetailDialog({
                     <div className="flex items-center gap-2">
                       <select
                         data-testid="feature-detail-dep-picker"
+                        aria-label="Add a prerequisite feature"
                         value={depPick}
                         onChange={(e) => setDepPick(e.target.value)}
                         disabled={saving}
@@ -844,13 +962,36 @@ export function FeatureDetailDialog({
                   className="space-y-2"
                   data-testid="feature-detail-logs-section"
                 >
-                  <label className="flex items-center gap-1 text-sm font-medium text-foreground">
-                    <TerminalSquare
-                      className="h-3.5 w-3.5"
-                      aria-hidden="true"
-                    />
-                    Agent activity
-                  </label>
+                  <div className="flex items-center justify-between gap-2">
+                    <label className="flex items-center gap-1 text-sm font-medium text-foreground">
+                      <TerminalSquare
+                        className="h-3.5 w-3.5"
+                        aria-hidden="true"
+                      />
+                      Agent activity
+                    </label>
+                    {/* ENH-002: one-click copy of the entire logs section as
+                        plain text, so users can paste into issues / chats
+                        without click-dragging across the modal. Hidden when
+                        there are no logs to copy. */}
+                    {logs.length > 0 && (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="ghost"
+                        onClick={handleCopyLogs}
+                        data-testid="feature-detail-copy-logs"
+                        aria-label="Copy agent logs to clipboard"
+                        className="h-7 gap-1 px-2 text-xs"
+                      >
+                        <ClipboardCopy
+                          className="h-3.5 w-3.5"
+                          aria-hidden="true"
+                        />
+                        Copy logs
+                      </Button>
+                    )}
+                  </div>
                   <p className="text-xs text-muted-foreground">
                     Messages captured during coding-agent sessions that worked
                     on this feature. Logs persist across sessions and server
@@ -1144,3 +1285,41 @@ export function FeatureDetailDialog({
     </Dialog>
   );
 }
+
+/**
+ * Memo'd export. The kanban parent re-renders this dialog on every SSE event
+ * during an agent run because `state.features` is replaced (a new array) on
+ * each log. Without memoisation the user's typing in the description /
+ * acceptance-criteria fields ends up fighting per-event re-renders, which
+ * shows up as visible input lag.
+ *
+ * The custom comparator skips callback identity (parents typically pass
+ * inline arrows) and does a content-shallow check on `allFeatures` against
+ * just the fields the dialog actually consumes (id, title, status). It
+ * intentionally ignores other feature fields so updates to e.g. priority on
+ * an unrelated feature do not bust the memo.
+ */
+export const FeatureDetailDialog = React.memo(
+  FeatureDetailDialogImpl,
+  (prev, next) => {
+    if (prev.open !== next.open) return false;
+    if (prev.featureId !== next.featureId) return false;
+    if (prev.projectId !== next.projectId) return false;
+    const a = prev.allFeatures;
+    const b = next.allFeatures;
+    if (a === b) return true;
+    if (a.length !== b.length) return false;
+    for (let i = 0; i < a.length; i++) {
+      const fa = a[i];
+      const fb = b[i];
+      if (
+        fa.id !== fb.id ||
+        fa.title !== fb.title ||
+        fa.status !== fb.status
+      ) {
+        return false;
+      }
+    }
+    return true;
+  },
+);

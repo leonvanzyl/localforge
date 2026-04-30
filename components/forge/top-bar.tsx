@@ -20,6 +20,13 @@ type TopBarProps = {
     folderPath: string;
     status: string;
   } | null;
+  /**
+   * The effective model + provider the orchestrator will actually use for
+   * the active project (per-project override or global default). Surfaced
+   * as a small badge so users can see at a glance which model is wired up,
+   * especially while a run is in flight.
+   */
+  activeModel: { model: string; provider: string } | null;
   isRunning: boolean;
   onStartAll: () => void;
   onPauseAll: () => void;
@@ -32,6 +39,7 @@ type TopBarProps = {
 
 export function TopBar({
   activeProject,
+  activeModel,
   isRunning,
   onStartAll,
   onPauseAll,
@@ -87,32 +95,55 @@ export function TopBar({
         </div>
       )}
 
+      {/* Effective model badge (ENH-006). Surfaces which model the
+          orchestrator will actually use, so the user doesn't have to dig
+          into settings to confirm it — especially during runs, where the
+          confusion between global default and project override has caused
+          real mistakes (e.g. expecting qwen but unknowingly running on the
+          global default llama3.2). */}
+      {activeProject && activeModel && (
+        <div
+          className={"tb-model " + (isRunning ? "running" : "")}
+          data-testid="topbar-active-model"
+          title={`${activeModel.provider} · ${activeModel.model}`}
+        >
+          <span className="tb-model-provider">{activeModel.provider}</span>
+          <span className="tb-model-sep">·</span>
+          <span className="tb-model-name">{activeModel.model}</span>
+        </div>
+      )}
+
       {/* Flex spacer */}
       <div style={{ flex: 1 }} />
 
       {/* Actions */}
       <div className="tb-actions">
-        {isRunning ? (
-          <button
-            className="btn tb-run-btn"
-            onClick={onPauseAll}
-            aria-label="Pause all agents"
-            title="Pause all agents"
-          >
-            <PauseIcon size={14} />
-            <span className="tb-run-label">pause all</span>
-          </button>
-        ) : (
-          <button
-            className="btn primary tb-run-btn"
-            onClick={onStartAll}
-            aria-label="Run queue"
-            title="Run queue"
-          >
-            <PlayIcon size={14} />
-            <span className="tb-run-label">run queue</span>
-          </button>
-        )}
+        {/* Run/Pause is project-scoped: hide it when no project is active so
+            users on /settings or other non-project routes don't click a
+            button that silently no-ops (BUG-004). */}
+        {activeProject ? (
+          isRunning ? (
+            <button
+              className="btn tb-run-btn"
+              onClick={onPauseAll}
+              aria-label="Pause all agents"
+              title="Pause all agents"
+            >
+              <PauseIcon size={14} />
+              <span className="tb-run-label">pause all</span>
+            </button>
+          ) : (
+            <button
+              className="btn primary tb-run-btn"
+              onClick={onStartAll}
+              aria-label="Run queue"
+              title="Run queue"
+            >
+              <PlayIcon size={14} />
+              <span className="tb-run-label">run queue</span>
+            </button>
+          )
+        ) : null}
 
         <button
           className="btn icon-btn ghost"

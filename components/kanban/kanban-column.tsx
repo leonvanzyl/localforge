@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import type { ReactNode } from "react";
-import { Inbox, Loader2, CheckCircle2, Plus } from "lucide-react";
+import { Inbox, Loader2, CheckCircle2, Plus, Trash2 } from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -24,6 +24,14 @@ type KanbanColumnProps = {
    * Backlog column to show this affordance.
    */
   onAdd?: () => void;
+  /**
+   * If provided, a destructive "Clear" button is rendered in the column
+   * header. Intended for the Completed column to make it cheap to reset a
+   * project's done pile (ENH-004). The button is only visible when the
+   * column has at least one card. The parent owns the confirmation prompt
+   * and the actual delete logic — this component just renders the trigger.
+   */
+  onClearCompleted?: () => void;
   /**
    * Optional ref attached to the column's scrollable body. The kanban-board
    * uses this to register the body as a `useDroppable` target so drag-and-
@@ -50,6 +58,7 @@ export function KanbanColumn({
   emptyHint,
   count,
   onAdd,
+  onClearCompleted,
   bodyRef,
   bodyClassName,
   children,
@@ -114,6 +123,21 @@ export function KanbanColumn({
             >
               <Plus className="h-3 w-3" aria-hidden="true" />
               Add Feature
+            </button>
+          )}
+          {onClearCompleted && id === "completed" && displayCount > 0 && (
+            <button
+              type="button"
+              onClick={onClearCompleted}
+              data-testid={`kanban-column-clear-${id}`}
+              aria-label={`Delete all ${displayCount} completed ${
+                displayCount === 1 ? "feature" : "features"
+              }`}
+              title="Delete every card in this column"
+              className="inline-flex items-center gap-1 rounded-md border border-destructive/40 bg-background px-2 py-0.5 text-[11px] font-medium text-destructive transition-colors hover:bg-destructive/10 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-destructive"
+            >
+              <Trash2 className="h-3 w-3" aria-hidden="true" />
+              Clear
             </button>
           )}
         </div>

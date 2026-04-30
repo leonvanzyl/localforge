@@ -159,6 +159,11 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
   // its SVG overlay can measure each card's position relative to the board
   // when drawing connector lines (Feature #52).
   const boardRef = React.useRef<HTMLDivElement>(null);
+  // Guard against concurrent runs of `handleClearCompleted` if the user
+  // clicks the "Clear" button repeatedly before the first batch of DELETEs
+  // resolves. Without this, each click fires a fresh batch against the
+  // same ids and surfaces misleading 404 errors from the second wave.
+  const clearCompletedInFlightRef = React.useRef(false);
 
   // PointerSensor with an activation distance so a click on a card still
   // opens the detail modal - the drag only starts after the user moves the
@@ -219,6 +224,61 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
   React.useEffect(() => {
     void load();
   }, [load]);
+
+  /**
+   * ENH-004 — bulk-delete every card in the Completed column. Cheap reset
+   * for users who want to redo a project (especially during testing /
+   * re-runs). Confirms via window.confirm to avoid an accidental wipe,
+   * then fires N parallel single-feature DELETEs through the existing API
+   * so we don't need a new bulk endpoint. On success we re-fetch the
+   * feature list; on partial failure we surface the first error and still
+   * re-fetch so the UI reflects whatever did get deleted.
+   */
+  const handleClearCompleted = React.useCallback(async () => {
+    if (state.kind !== "ready") return;
+    if (clearCompletedInFlightRef.current) return;
+    const completedIds = state.features
+      .filter((f) => f.status === "completed")
+      .map((f) => f.id);
+    if (completedIds.length === 0) return;
+    const confirmed = window.confirm(
+      `Delete all ${completedIds.length} completed ${
+        completedIds.length === 1 ? "feature" : "features"
+      }? This cannot be undone.`,
+    );
+    if (!confirmed) return;
+    clearCompletedInFlightRef.current = true;
+    setDragError(null);
+    try {
+      const results = await Promise.allSettled(
+        completedIds.map((id) =>
+          fetch(`/api/features/${id}`, { method: "DELETE" }).then(
+            async (res) => {
+              if (!res.ok) {
+                const data = (await res.json().catch(() => ({}))) as {
+                  error?: string;
+                };
+                throw new Error(data.error || `Delete failed (${res.status})`);
+              }
+            },
+          ),
+        ),
+      );
+      const firstFailure = results.find(
+        (r): r is PromiseRejectedResult => r.status === "rejected",
+      );
+      if (firstFailure) {
+        setDragError(
+          firstFailure.reason instanceof Error
+            ? firstFailure.reason.message
+            : "Failed to clear some completed features",
+        );
+      }
+      await load();
+    } finally {
+      clearCompletedInFlightRef.current = false;
+    }
+  }, [state, load]);
 
   // Reload whenever the orchestrator (or another action) flips feature
   // status - e.g. start/stop buttons, agent completion events. Anyone can
@@ -464,6 +524,9 @@ export function KanbanBoard({ projectId }: { projectId: number }) {
                 items={items}
                 onAdd={() => setAddDialogStatus(col.id)}
                 onOpen={(id) => setDetailFeatureId(id)}
+                onClearCompleted={
+                  col.id === "completed" ? handleClearCompleted : undefined
+                }
               />
             );
           })}
@@ -534,11 +597,13 @@ function DroppableColumn({
   items,
   onAdd,
   onOpen,
+  onClearCompleted,
 }: {
   col: ColumnDef;
   items: FeatureCardData[];
   onAdd: () => void;
   onOpen: (id: number) => void;
+  onClearCompleted?: () => void;
 }) {
   const { setNodeRef, isOver } = useDroppable({ id: col.id });
   const itemIds = React.useMemo(() => items.map((i) => i.id), [items]);
@@ -550,6 +615,7 @@ function DroppableColumn({
       emptyHint={col.emptyHint}
       count={items.length}
       onAdd={onAdd}
+      onClearCompleted={onClearCompleted}
       bodyRef={setNodeRef}
       bodyClassName={cn(
         // Highlight column body while a card is being dragged over it so

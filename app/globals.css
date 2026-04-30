@@ -177,6 +177,26 @@
 .ws-crumb .nm { font-family: 'Fraunces', serif; font-weight: 500; font-size: 16px; white-space: nowrap; flex-shrink: 0; }
 .ws-crumb .pth { font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--ink-3); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
 
+/* ENH-006: effective-model badge in the top bar. Subtle by default,
+   slightly emphasised while a run is in flight so users can spot which
+   model is actually doing the work. */
+.tb-model {
+  display: inline-flex; align-items: center; gap: 6px;
+  padding: 3px 9px; border-radius: 999px;
+  font-family: 'JetBrains Mono', monospace; font-size: 11px;
+  background: var(--panel-2); border: 1px solid var(--line);
+  color: var(--ink-3); white-space: nowrap; min-width: 0;
+}
+.tb-model.running {
+  border-color: var(--accent); color: var(--ink-1);
+  background: rgba(200,90,43,0.06);
+}
+[data-theme="dark"] .tb-model.running { background: rgba(224,122,74,0.08); }
+.tb-model-provider { color: var(--ink-3); }
+.tb-model-sep { color: var(--ink-4); }
+.tb-model-name { color: var(--ink-1); font-weight: 500; }
+.tb-model.running .tb-model-name { color: var(--accent); }
+
 .tb-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
 .btn.tb-run-btn { white-space: nowrap; }
 .tb-run-label { white-space: nowrap; }
@@ -442,6 +462,47 @@
 .col[data-col="in_progress"] .col-title .t { color: var(--accent); }
 .col[data-col="done"] .col-title .t,
 .col[data-col="completed"] .col-title .t { color: var(--good); }
+
+/* ENH-004: bulk-clear button on the Completed column header. Destructive,
+   so it borrows the bad-state colour and only shows when the column is
+   non-empty. */
+.col-clear {
+  display: inline-flex; align-items: center; gap: 4px;
+  padding: 2px 8px; font-family: 'JetBrains Mono', monospace; font-size: 11px; font-weight: 500;
+  color: var(--bad); background: transparent; border: 1px solid var(--bad); border-radius: 4px;
+  cursor: pointer; transition: background .12s, color .12s;
+}
+.col-clear:hover { background: var(--bad); color: var(--panel); }
+.col-clear:focus-visible { outline: 2px solid var(--bad); outline-offset: 2px; }
+
+/* ENH-004 broader: bulk-select mode. The kanban-header "Select" toggle
+   flips cards into selection mode — they show a corner checkbox glyph,
+   clicks toggle selection, and a sticky action bar at the bottom of
+   the .board-section reveals once at least one card is selected. */
+.card-checkbox {
+  position: absolute; top: 6px; right: 8px;
+  font-size: 14px; line-height: 1; color: var(--ink-2);
+  pointer-events: none; -webkit-user-select: none; user-select: none;
+}
+.card.selected {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 2px var(--accent), var(--shadow);
+}
+.card.selected .card-checkbox { color: var(--accent); }
+
+.fkb-select-bar {
+  position: sticky; bottom: 8px; margin-top: 12px;
+  display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  padding: 8px 14px;
+  background: var(--panel); border: 1px solid var(--line-2); border-radius: 10px;
+  box-shadow: var(--shadow-lg);
+  font-family: 'JetBrains Mono', monospace; font-size: 12px;
+  z-index: 5;
+}
+.fkb-select-count { color: var(--ink-2); }
+.fkb-select-bar-actions { display: flex; gap: 8px; align-items: center; }
+.btn.sm.danger { color: var(--bad); border-color: var(--bad); }
+.btn.sm.danger:hover { background: var(--bad); color: var(--panel); }
 
 .col-body { flex: 1; padding: 2px; display: flex; flex-direction: column; gap: 8px; min-height: 0; overflow-y: auto; }
 

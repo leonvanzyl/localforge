@@ -2,6 +2,7 @@
 
 import React from "react";
 import { useRouter } from "next/navigation";
+import { toast } from "sonner";
 import { useTheme } from "@/components/theme/theme-provider";
 import { useShell } from "@/components/app-shell/shell-context";
 import { TopBar } from "@/components/forge/top-bar";
@@ -69,6 +70,66 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
     const match = window.location.pathname.match(/^\/projects\/(\d+)(?:\/|$)/);
     return match ? Number.parseInt(match[1], 10) : null;
   }, [activeProject]);
+
+  // ENH-006: surface the effective model/provider on the top bar so the
+  // user can see at a glance which model the orchestrator will actually
+  // use when they click run queue. This matters because settings have a
+  // global default + a per-project override, and confusion about which
+  // is active is a real source of mistakes (especially when retrying
+  // after switching models). Re-fetched whenever the active project
+  // changes, the project-settings dialog dispatches a settings-changed
+  // event, or another part of the app bumps `refreshTick` (which the
+  // run-queue / pause-all buttons already do, so the badge stays fresh
+  // across settings changes).
+  React.useEffect(() => {
+    const onSettingsChanged = () => {
+      requestRefresh();
+    };
+    window.addEventListener("localforge:settings-changed", onSettingsChanged);
+    return () => {
+      window.removeEventListener(
+        "localforge:settings-changed",
+        onSettingsChanged,
+      );
+    };
+  }, [requestRefresh]);
+  //
+  // We store the fetched value keyed by projectId so a stale fetch from a
+  // previous project never bleeds into a new one. The derived
+  // `effectiveModel` returns null whenever the stored value's id doesn't
+  // match the current active project, avoiding any setState-inside-effect
+  // pattern (linted out by react-hooks/set-state-in-effect).
+  const [fetchedModel, setFetchedModel] = React.useState<{
+    projectId: number;
+    model: string;
+    provider: string;
+  } | null>(null);
+  const refreshTick = useActiveProject().refreshTick;
+  React.useEffect(() => {
+    if (!activeProject) return;
+    let cancelled = false;
+    const pid = activeProject.id;
+    fetch(`/api/projects/${pid}/settings`, { cache: "no-store" })
+      .then((res) => (res.ok ? res.json() : null))
+      .then((data: { effective?: { model: string; provider: string } } | null) => {
+        if (cancelled || !data?.effective) return;
+        setFetchedModel({
+          projectId: pid,
+          model: data.effective.model,
+          provider: data.effective.provider,
+        });
+      })
+      .catch(() => {
+        /* ignore — we just won't show the badge */
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [activeProject, refreshTick]);
+  const effectiveModel =
+    activeProject && fetchedModel?.projectId === activeProject.id
+      ? { model: fetchedModel.model, provider: fetchedModel.provider }
+      : null;
 
   // SSE subscription for activity events
   React.useEffect(() => {
@@ -150,37 +211,57 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
   // state immediately instead of waiting for the 5s poll tick. Without this
   // nudge the UI feels unresponsive after "run queue" and users may
   // double-click, racing another start_all against the first.
+  // BUG-004: previously these handlers silently no-oped when the user had
+  // no active project (e.g. invoked via Ctrl+Enter from /settings) or when
+  // the fetch failed. The TopBar button is now gated on activeProject, but
+  // the keyboard shortcut path can still reach here with no project, and
+  // the server can still 500. Surface both as a toast so the user has
+  // feedback instead of an apparent no-op.
   const handleStartAll = React.useCallback(() => {
     const projectId = getActiveProjectId();
-    if (!projectId) return;
+    if (!projectId) {
+      toast.error("No active project — open a project first to run its queue.");
+      return;
+    }
     fetch(`/api/projects/${projectId}/orchestrator`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "start_all" }),
     })
-      .then(() => {
+      .then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(text || `HTTP ${res.status}`);
+        }
         requestRefresh();
         router.refresh();
       })
-      .catch(() => {
-        /* ignore */
+      .catch((err) => {
+        toast.error(`Run queue failed: ${err?.message ?? "unknown error"}`);
       });
   }, [getActiveProjectId, requestRefresh, router]);
 
   const handlePauseAll = React.useCallback(() => {
     const projectId = getActiveProjectId();
-    if (!projectId) return;
+    if (!projectId) {
+      toast.error("No active project — nothing to pause.");
+      return;
+    }
     fetch(`/api/projects/${projectId}/orchestrator`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify({ action: "stop_all" }),
     })
-      .then(() => {
+      .then(async (res) => {
+        if (!res.ok) {
+          const text = await res.text().catch(() => "");
+          throw new Error(text || `HTTP ${res.status}`);
+        }
         requestRefresh();
         router.refresh();
       })
-      .catch(() => {
-        /* ignore */
+      .catch((err) => {
+        toast.error(`Pause failed: ${err?.message ?? "unknown error"}`);
       });
   }, [getActiveProjectId, requestRefresh, router]);
 
@@ -275,6 +356,7 @@ function ForgeShellInner({ children }: { children: React.ReactNode }) {
     >
       <TopBar
         activeProject={activeProject}
+        activeModel={effectiveModel}
         isRunning={isRunning}
         onStartAll={handleStartAll}
         onPauseAll={handlePauseAll}
