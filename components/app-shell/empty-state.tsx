@@ -3,7 +3,7 @@
 import * as React from "react";
 import Image from "next/image";
 import { useRouter } from "next/navigation";
-import { Sparkles, Gamepad2 } from "lucide-react";
+import { Sparkles, Kanban } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useShell } from "./shell-context";
@@ -23,7 +23,7 @@ export function EmptyState() {
       const res = await fetch("/api/projects/load-example", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ example: "retro-arcade" }),
+        body: JSON.stringify({ example: "retro-todo" }),
       });
       const data = await res.json();
       if (!res.ok || !data.project) {
@@ -103,7 +103,7 @@ export function EmptyState() {
             disabled={loadingExample}
             data-testid="empty-state-example-cta"
           >
-            <Gamepad2 className="h-4 w-4" aria-hidden="true" />
+            <Kanban className="h-4 w-4" aria-hidden="true" />
             {loadingExample ? "Loading…" : "Try an Example"}
           </Button>
         </div>

@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Sparkles, FolderPlus, Gamepad2 } from "lucide-react";
+import { Loader2, Sparkles, FolderPlus, Kanban } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -89,7 +89,7 @@ export function NewProjectDialog() {
         const res = await fetch("/api/projects/load-example", {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ example: "retro-arcade", name: trimmed }),
+          body: JSON.stringify({ example: "retro-todo", name: trimmed }),
         });
         const data = (await res.json().catch(() => ({}))) as {
           project?: { id: number; name: string };
@@ -227,9 +227,9 @@ export function NewProjectDialog() {
                 selected={mode === "example"}
                 onSelect={setMode}
                 disabled={submitting}
-                icon={<Gamepad2 className="h-4 w-4" aria-hidden="true" />}
+                icon={<Kanban className="h-4 w-4" aria-hidden="true" />}
                 title="Load an example"
-                description="Load a retro arcade game with 47 pre-built features."
+                description="Load a retro CRT to-do board with 8 pre-built features (Kanban, calendar, localStorage)."
                 testId="new-project-mode-example"
               />
             </div>

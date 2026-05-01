@@ -34,7 +34,7 @@ function loadExample(slug: string): ExampleProject | null {
  * Creates a project from a bundled example file, including all features
  * and their dependency graph.
  *
- * Body: { example: "retro-arcade", name?: string }
+ * Body: { example: "retro-todo", name?: string }
  */
 export async function POST(req: NextRequest) {
   let body: unknown;
@@ -51,7 +51,7 @@ export async function POST(req: NextRequest) {
 
   if (typeof example !== "string" || !example.trim()) {
     return NextResponse.json(
-      { error: "Field 'example' is required (e.g. 'retro-arcade')" },
+      { error: "Field 'example' is required (e.g. 'retro-todo')" },
       { status: 400 },
     );
   }

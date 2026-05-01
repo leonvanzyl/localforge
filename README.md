@@ -94,6 +94,12 @@ tests/               Playwright specs
 Per-project model config is stored in `.pi/models.json` inside each project folder.
 Override per project via project settings, or globally via **Settings** in the sidebar.
 
+**Playwright verification** (off by default) runs after each feature; **Playwright headed browser**
+shows a real Chromium window during that check and passes `playwright-cli open --headed` to the
+coding agent so you can watch browser automation locally. When the `CI` environment variable is set,
+verification stays headless regardless of the headed toggle. Headed mode uses a short Playwright
+`slowMo` so actions are easier to follow.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) for details.

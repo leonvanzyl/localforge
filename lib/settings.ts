@@ -31,6 +31,7 @@ export const GLOBAL_SETTING_KEYS = [
   "dev_server_port",
   "max_concurrent_agents",
   "playwright_enabled",
+  "playwright_headed",
 ] as const;
 
 /**
@@ -47,6 +48,7 @@ export const PROJECT_SETTING_KEYS = [
   "dev_server_port",
   "max_concurrent_agents",
   "playwright_enabled",
+  "playwright_headed",
 ] as const;
 
 export type GlobalSettingKey = (typeof GLOBAL_SETTING_KEYS)[number];
@@ -66,6 +68,10 @@ export const DEFAULT_GLOBAL_SETTINGS: Record<GlobalSettingKey, string> = {
   // default is off — the coding agent's own success signal is treated as
   // sufficient unless the user explicitly enables verification.
   playwright_enabled: "false",
+  // When verification runs, launch a visible Chromium window (headed) instead
+  // of headless. Ignored when playwright_enabled is false. Forced headless when
+  // CI is set in the agent runner. Default off for speed and unattended runs.
+  playwright_headed: "false",
 };
 
 export const MAX_CONCURRENT_AGENTS_HARD_CAP = 3;
@@ -91,6 +97,13 @@ function validatePlaywrightEnabled(raw: string): string | null {
  * matching the default-off policy.
  */
 export function isPlaywrightEnabled(raw: string | null | undefined): boolean {
+  return raw === "true";
+}
+
+/**
+ * When Playwright verification is on, whether to use a visible browser window.
+ */
+export function isPlaywrightHeaded(raw: string | null | undefined): boolean {
   return raw === "true";
 }
 
@@ -171,6 +184,12 @@ function validate(input: UpdateGlobalSettingsInput): string | null {
   if (input.playwright_enabled !== undefined) {
     const err = validatePlaywrightEnabled(input.playwright_enabled);
     if (err) return err;
+  }
+  if (input.playwright_headed !== undefined) {
+    const err = validatePlaywrightEnabled(input.playwright_headed);
+    if (err) {
+      return err.replace("Playwright enabled", "Playwright headed");
+    }
   }
   return null;
 }
@@ -302,6 +321,12 @@ function validateProjectInput(input: UpdateProjectSettingsInput): string | null 
   if (input.playwright_enabled) {
     const err = validatePlaywrightEnabled(input.playwright_enabled);
     if (err) return err;
+  }
+  if (input.playwright_headed) {
+    const err = validatePlaywrightEnabled(input.playwright_headed);
+    if (err) {
+      return err.replace("Playwright enabled", "Playwright headed");
+    }
   }
   // model accepts any non-empty string, or empty/null to clear.
   return null;

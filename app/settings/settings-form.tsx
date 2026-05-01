@@ -348,6 +348,32 @@ export function SettingsForm({ initial }: { initial: FormState }) {
           override this in their own settings.
         </p>
       </div>
+      <div className="flex flex-col gap-2">
+        <label
+          htmlFor="playwright_headed"
+          className="text-sm font-medium text-foreground"
+        >
+          Playwright headed browser
+        </label>
+        <select
+          id="playwright_headed"
+          name="playwright_headed"
+          data-testid="settings-playwright-headed-select"
+          value={values.playwright_headed}
+          onChange={(e) => update("playwright_headed", e.target.value)}
+          className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        >
+          <option value="false">Headless (default)</option>
+          <option value="true">Headed (visible window)</option>
+        </select>
+        <p className="text-xs text-muted-foreground">
+          When Playwright verification is enabled, runs post-run Chromium in a
+          visible window (with a short slowMo) and tells the coding agent to use{" "}
+          <code className="font-mono">playwright-cli open --headed</code>. On
+          CI (<code className="font-mono">CI</code> env set), verification stays
+          headless. Individual projects can override in project settings.
+        </p>
+      </div>
       <div className="flex items-center gap-3">
         <Button
           type="submit"

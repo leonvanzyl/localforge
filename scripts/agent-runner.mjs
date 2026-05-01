@@ -51,6 +51,12 @@
  *                             local models can't reliably drive a browser,
  *                             so the default is off; the coding agent's
  *                             own success signal is treated as sufficient.
+ *   LOCALFORGE_PLAYWRIGHT_HEADED
+ *                             "true" to show a visible Chromium window for
+ *                             post-run verification and to pass --headed to
+ *                             playwright-cli in the system prompt. "false"
+ *                             (default) keeps headless. When CI is set,
+ *                             verification stays headless regardless.
  */
 
 import fs from "node:fs";
@@ -106,6 +112,9 @@ debugLog("STARTUP", {
     LOCALFORGE_MAX_RETRIES: process.env.LOCALFORGE_MAX_RETRIES ?? "(unset)",
     LOCALFORGE_RETRY_DELAY_MS: process.env.LOCALFORGE_RETRY_DELAY_MS ?? "(unset)",
     LOCALFORGE_PLAYWRIGHT_TIMEOUT_MS: process.env.LOCALFORGE_PLAYWRIGHT_TIMEOUT_MS ?? "(unset)",
+    LOCALFORGE_PLAYWRIGHT_ENABLED: process.env.LOCALFORGE_PLAYWRIGHT_ENABLED ?? "(unset)",
+    LOCALFORGE_PLAYWRIGHT_HEADED: process.env.LOCALFORGE_PLAYWRIGHT_HEADED ?? "(unset)",
+    CI: process.env.CI ?? "(unset)",
     LOCALFORGE_SESSION_ID: process.env.LOCALFORGE_SESSION_ID ?? "(unset)",
     LOCALFORGE_FEATURE_ID: process.env.LOCALFORGE_FEATURE_ID ?? "(unset)",
   },
@@ -326,9 +335,25 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
   debugLog("PLAYWRIGHT_TARGET_URL", { baseUrl, devPort });
   emitLog(`Playwright navigating to ${baseUrl}`, "info");
 
+  const ci = !!process.env.CI;
+  const wantHeaded = process.env.LOCALFORGE_PLAYWRIGHT_HEADED === "true";
+  const headless = ci || !wantHeaded;
+  debugLog("PLAYWRIGHT_LAUNCH", { headless, ci, wantHeaded });
+  if (ci && wantHeaded) {
+    emitLog(
+      "Playwright headed mode ignored because CI is set (headless only)",
+      "info",
+    );
+  }
+
   let browser = null;
   try {
-    browser = await chromium.launch({ headless: true });
+    /** @type {import('@playwright/test').LaunchOptions} */
+    const launchOptions = { headless };
+    if (!headless) {
+      launchOptions.slowMo = 250;
+    }
+    browser = await chromium.launch(launchOptions);
     const context = await browser.newContext();
     const page = await context.newPage();
     await page.goto(baseUrl, { timeout: 15000, waitUntil: "networkidle" });
@@ -373,7 +398,14 @@ async function runPlaywrightTests({ featureId, featureTitle, screenshotPath }) {
   }
 }
 
-function buildCodingSystemPrompt(projectDir, additionalInstructions, devServerPort, playwrightEnabled) {
+function buildCodingSystemPrompt(
+  projectDir,
+  additionalInstructions,
+  devServerPort,
+  playwright,
+) {
+  const playwrightEnabled = playwright?.enabled === true;
+  const playwrightHeaded = playwright?.headed === true;
   const base = `You are LocalForge's coding agent.
 
 You have been handed ONE backlog feature for a local project. Implement it
@@ -426,7 +458,7 @@ ${playwrightEnabled ? `
 Browser testing with playwright-cli:
 After implementing a feature, you MUST verify it works via the browser using
 playwright-cli (available as a bash command). This is mandatory — do not skip it.
-  1. Open the app: playwright-cli open http://localhost:${devServerPort}
+  1. Open the app: playwright-cli open${playwrightHeaded ? " --headed" : ""} http://localhost:${devServerPort}
   2. Take a snapshot to see elements: playwright-cli snapshot
   3. Read the snapshot file to find element refs
   4. Click elements: playwright-cli click <ref>
@@ -436,7 +468,11 @@ playwright-cli (available as a bash command). This is mandatory — do not skip 
   8. Check console errors: playwright-cli console
   9. Close when done: playwright-cli close
 The snapshot and screenshot commands save files to .playwright-cli/. Read the
-output file to see the results. Always close the browser when finished.` : ""}`;
+output file to see the results. Always close the browser when finished.${
+    playwrightHeaded
+      ? " With headed mode on, a visible browser window opens so you can watch automation; keep --headed on the open command."
+      : ""
+  }` : ""}`;
 
   if (additionalInstructions && additionalInstructions.trim()) {
     return base + `\n\nAdditional project-specific instructions:\n${additionalInstructions.trim()}`;
@@ -663,7 +699,10 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
-      systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort, process.env.LOCALFORGE_PLAYWRIGHT_ENABLED === "true"),
+      systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort, {
+        enabled: process.env.LOCALFORGE_PLAYWRIGHT_ENABLED === "true",
+        headed: process.env.LOCALFORGE_PLAYWRIGHT_HEADED === "true",
+      }),
       extensionFactories: [workspaceGuardExtension],
     });
     await loader.reload();

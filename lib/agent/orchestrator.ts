@@ -498,6 +498,8 @@ function spawnAgentRunner(args: {
   // to skip the Playwright verification phase entirely. Default is "false".
   const playwrightEnabled =
     effectiveSettings.playwright_enabled === "true" ? "true" : "false";
+  const playwrightHeaded =
+    effectiveSettings.playwright_headed === "true" ? "true" : "false";
 
   // Write the feature context to a temp JSON file so the runner can read
   // long descriptions and acceptance criteria without argv escaping pain.
@@ -555,6 +557,7 @@ function spawnAgentRunner(args: {
     nodeExec: process.execPath,
     sessionTimeoutMs: SESSION_TIMEOUT_MS,
     playwrightEnabled,
+    playwrightHeaded,
   });
 
   const child = spawn(process.execPath, argv, {
@@ -566,6 +569,7 @@ function spawnAgentRunner(args: {
       LOCALFORGE_DEV_SERVER_PORT: devServerPort,
       LOCALFORGE_PLAYWRIGHT_BASE_URL: `http://localhost:${devServerPort}`,
       LOCALFORGE_PLAYWRIGHT_ENABLED: playwrightEnabled,
+      LOCALFORGE_PLAYWRIGHT_HEADED: playwrightHeaded,
     },
     stdio: "pipe",
   });

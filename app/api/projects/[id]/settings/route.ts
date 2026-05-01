@@ -55,6 +55,7 @@ export async function GET(_req: NextRequest, ctx: RouteContext) {
       dev_server_port: globals.dev_server_port,
       max_concurrent_agents: globals.max_concurrent_agents,
       playwright_enabled: globals.playwright_enabled,
+      playwright_headed: globals.playwright_headed,
     },
   });
 }

@@ -139,7 +139,7 @@ const TECH_CARDS = [
     Icon: TestTube2,
     name: "Playwright",
     version: "e2e testing",
-    desc: "Each agent run ends with Playwright tests and screenshots. Run npx playwright test to verify features manually.",
+    desc: "Optional verification when enabled in settings: Chromium visits the dev server and captures a screenshot. Turn on headed mode in settings to watch the browser window. The agent uses playwright-cli with --headed when configured. Run npx playwright test for manual checks.",
   },
 ];
 

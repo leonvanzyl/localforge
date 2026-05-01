@@ -57,6 +57,7 @@ type ProjectSettingsResponse = {
     dev_server_port: string | null;
     max_concurrent_agents: string | null;
     playwright_enabled: string | null;
+    playwright_headed: string | null;
   };
   effective: {
     provider: string;
@@ -67,6 +68,7 @@ type ProjectSettingsResponse = {
     dev_server_port: string;
     max_concurrent_agents: string;
     playwright_enabled: string;
+    playwright_headed: string;
   };
   defaults: {
     provider: string;
@@ -77,11 +79,16 @@ type ProjectSettingsResponse = {
     dev_server_port: string;
     max_concurrent_agents: string;
     playwright_enabled: string;
+    playwright_headed: string;
   };
 };
 
 function describePlaywrightEnabled(raw: string): string {
   return raw === "true" ? "Enabled" : "Disabled";
+}
+
+function describePlaywrightHeaded(raw: string): string {
+  return raw === "true" ? "Headed" : "Headless";
 }
 
 type ModelsProbe =
@@ -114,6 +121,7 @@ export function ProjectSettingsDialog({
   const [devServerPort, setDevServerPort] = React.useState("");
   const [maxConcurrentAgents, setMaxConcurrentAgents] = React.useState("");
   const [playwrightEnabled, setPlaywrightEnabled] = React.useState("");
+  const [playwrightHeaded, setPlaywrightHeaded] = React.useState("");
   const [submitting, setSubmitting] = React.useState(false);
   const [saved, setSaved] = React.useState(false);
   const [error, setError] = React.useState<string | null>(null);
@@ -148,6 +156,7 @@ export function ProjectSettingsDialog({
         setDevServerPort(complete.overrides.dev_server_port ?? "");
         setMaxConcurrentAgents(complete.overrides.max_concurrent_agents ?? "");
         setPlaywrightEnabled(complete.overrides.playwright_enabled ?? "");
+        setPlaywrightHeaded(complete.overrides.playwright_headed ?? "");
       } catch (err) {
         if (cancelled) return;
         setError(
@@ -236,6 +245,7 @@ export function ProjectSettingsDialog({
           dev_server_port: devServerPort,
           max_concurrent_agents: maxConcurrentAgents,
           playwright_enabled: playwrightEnabled,
+          playwright_headed: playwrightHeaded,
         }),
       });
       const payload = (await res.json()) as Partial<ProjectSettingsResponse> & {
@@ -472,6 +482,38 @@ export function ProjectSettingsDialog({
                       )}). When enabled, every completed feature is verified by launching Chromium against the dev server. Many small local models can't drive a browser reliably — leaving it off treats the coding agent's own success as the outcome.`}
                 </p>
               </div>
+              <div className="flex flex-col gap-1">
+                <label
+                  htmlFor="project-playwright-headed"
+                  className="text-sm font-medium text-foreground"
+                >
+                  Playwright headed browser
+                </label>
+                <select
+                  id="project-playwright-headed"
+                  name="project-playwright-headed"
+                  data-testid="project-settings-playwright-headed-select"
+                  value={playwrightHeaded}
+                  onChange={(e) => setPlaywrightHeaded(e.target.value)}
+                  disabled={submitting}
+                  className="h-10 w-full rounded-md border border-input bg-background px-3 text-sm text-foreground shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring disabled:cursor-not-allowed disabled:opacity-60"
+                >
+                  <option value="">
+                    Use global default ({describePlaywrightHeaded(
+                      data.defaults.playwright_headed,
+                    )})
+                  </option>
+                  <option value="false">Headless</option>
+                  <option value="true">Headed (visible window)</option>
+                </select>
+                <p className="text-xs text-muted-foreground">
+                  {data.overrides.playwright_headed
+                    ? "Project override is set. Choose 'Use global default' to clear."
+                    : `Using the global default (${describePlaywrightHeaded(
+                        data.defaults.playwright_headed,
+                      )}). Applies when verification is on; CI forces headless.`}
+                </p>
+              </div>
               <div
                 data-testid="project-settings-effective"
                 className="rounded-md border border-border bg-muted/40 p-3 text-xs text-muted-foreground"
@@ -510,6 +552,12 @@ export function ProjectSettingsDialog({
                   Playwright verification:{" "}
                   <span>
                     {describePlaywrightEnabled(data.effective.playwright_enabled)}
+                  </span>
+                </p>
+                <p>
+                  Playwright headed:{" "}
+                  <span>
+                    {describePlaywrightHeaded(data.effective.playwright_headed)}
                   </span>
                 </p>
               </div>
