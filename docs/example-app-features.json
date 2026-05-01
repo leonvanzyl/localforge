@@ -1,0 +1,95 @@
+{
+  "_comment": "Atomic backlog for the DreamForgeIdeas example app. See example-app-requirements.md for the full spec. Use scripts/load-example-features.mjs to insert these into a project's backlog. Descriptions are intentionally prescriptive — they list the exact files to write/edit so smaller models that tend to read-but-not-write get a clear nudge toward actual implementation.",
+  "features": [
+    {
+      "key": "scaffold",
+      "title": "Scaffold Next.js app",
+      "category": "functional",
+      "description": "ACTION: scaffold a Next.js 16 App Router project IN THE CURRENT WORKING DIRECTORY (your shell cwd IS the project root — do NOT cd elsewhere, do NOT use absolute paths).\n\nSTEPS YOU MUST EXECUTE:\n1. Run `npx create-next-app@latest . --typescript --tailwind --use-npm --yes --skip-install` via Bash. The `.` makes it scaffold INTO cwd. If it complains the directory is not empty, mv any conflicting hidden folders aside, then retry.\n2. Run `npm install` via Bash to install dependencies.\n3. Use Read on `package.json` to verify `next`, `react`, `react-dom`, `tailwindcss` are listed.\n\nDo NOT just plan or describe — EXECUTE the bash commands. The session is incomplete unless `package.json` and `app/` exist on disk afterwards.",
+      "acceptanceCriteria": "- package.json lists next, react, react-dom, tailwindcss\n- app/page.tsx and app/layout.tsx exist\n- node_modules/ exists (npm install ran)\n- npm run dev would listen on http://localhost:3000",
+      "priority": 1,
+      "dependsOn": []
+    },
+    {
+      "key": "db-setup",
+      "title": "Add SQLite and Drizzle ORM",
+      "category": "functional",
+      "description": "ACTION: add SQLite + Drizzle ORM to the existing Next.js scaffold.\n\nFILES YOU MUST CREATE OR MODIFY (use Write/Edit):\n- `lib/db.ts` — exports a Drizzle `db` instance backed by better-sqlite3, opening `data.sqlite` in the project root. Suggested content:\n  ```ts\n  import Database from 'better-sqlite3';\n  import { drizzle } from 'drizzle-orm/better-sqlite3';\n  const sqlite = new Database('data.sqlite');\n  export const db = drizzle(sqlite);\n  ```\n- `drizzle.config.ts` — points at `./lib/schema.ts` (created in the next feature) and outputs to `./drizzle`. Suggested content:\n  ```ts\n  import type { Config } from 'drizzle-kit';\n  export default { schema: './lib/schema.ts', out: './drizzle', dialect: 'sqlite', dbCredentials: { url: './data.sqlite' } } satisfies Config;\n  ```\n\nBASH COMMAND YOU MUST RUN:\n- `npm install better-sqlite3 drizzle-orm` and `npm install -D drizzle-kit @types/better-sqlite3`.\n\nThe session is incomplete unless lib/db.ts AND drizzle.config.ts exist on disk and node_modules/better-sqlite3 exists. Reading package.json without writing files does NOT complete this feature.",
+      "acceptanceCriteria": "- lib/db.ts exists and exports a `db` Drizzle instance\n- drizzle.config.ts exists and references ./lib/schema.ts and ./drizzle\n- package.json now lists better-sqlite3, drizzle-orm, drizzle-kit, @types/better-sqlite3\n- node_modules/better-sqlite3 exists",
+      "priority": 2,
+      "dependsOn": ["scaffold"]
+    },
+    {
+      "key": "schema",
+      "title": "Define ideas schema and migrate",
+      "category": "functional",
+      "description": "ACTION: define the `ideas` table schema and run the initial migration.\n\nFILES YOU MUST CREATE OR MODIFY (use Write):\n- `lib/schema.ts` — defines the `ideas` table with these columns:\n  ```ts\n  import { sqliteTable, integer, text } from 'drizzle-orm/sqlite-core';\n  import { sql } from 'drizzle-orm';\n  export const ideas = sqliteTable('ideas', {\n    id: integer('id').primaryKey({ autoIncrement: true }),\n    name: text('name').notNull(),\n    description: text('description'),\n    status: text('status').notNull().default('idea'),\n    githubUrl: text('github_url'),\n    localRepoPath: text('local_repo_path'),\n    productionUrl: text('production_url'),\n    marketSector: text('market_sector'),\n    progressPercent: integer('progress_percent').notNull().default(0),\n    createdAt: text('created_at').notNull().default(sql`CURRENT_TIMESTAMP`),\n    updatedAt: text('updated_at').notNull().default(sql`CURRENT_TIMESTAMP`),\n  });\n  ```\n\nBASH COMMANDS YOU MUST RUN:\n- `npx drizzle-kit generate` — produces a SQL migration in ./drizzle/.\n- `npx drizzle-kit migrate` — applies it, creating data.sqlite.\n\nThe session is incomplete unless lib/schema.ts exists, ./drizzle/ contains a *.sql migration file, and data.sqlite exists at the project root.",
+      "acceptanceCriteria": "- lib/schema.ts exists with all 11 columns of the ideas table\n- ./drizzle/ directory contains at least one .sql migration file\n- data.sqlite exists at the project root\n- A no-op `npx drizzle-kit generate` afterwards reports no schema changes",
+      "priority": 3,
+      "dependsOn": ["db-setup"]
+    },
+    {
+      "key": "api-list-create",
+      "title": "List and create ideas API",
+      "category": "functional",
+      "description": "ACTION: add the GET / POST API for ideas.\n\nFILE YOU MUST CREATE (use Write):\n- `app/api/ideas/route.ts` — exports two named functions:\n  - `GET()` returns `NextResponse.json({ ideas: <all rows> })` by querying `db.select().from(ideas)`.\n  - `POST(request)` parses the JSON body, validates `name` is a non-empty string (returns 400 otherwise), inserts a row with `db.insert(ideas).values({ name, description?, status?, ... }).returning().get()`, returns 201 with the inserted row. Default status to 'idea' and progressPercent to 0 if not provided.\n\nImports you'll need: `NextResponse` from 'next/server', `db` from '@/lib/db', `ideas` from '@/lib/schema'.\n\nThe session is incomplete unless app/api/ideas/route.ts exists on disk.",
+      "acceptanceCriteria": "- app/api/ideas/route.ts exists and exports GET + POST\n- Hitting GET /api/ideas returns { ideas: [] } on a fresh DB\n- POST /api/ideas with {\"name\":\"x\"} returns 201 with the inserted row\n- POST without a name returns 400",
+      "priority": 4,
+      "dependsOn": ["schema"]
+    },
+    {
+      "key": "api-update-delete",
+      "title": "Update and delete ideas API",
+      "category": "functional",
+      "description": "ACTION: add the PATCH / DELETE API for individual ideas.\n\nFILE YOU MUST CREATE (use Write):\n- `app/api/ideas/[id]/route.ts` — exports two named functions:\n  - `PATCH(request, { params })` parses `params.id` as integer, parses the JSON body, builds a partial update with only the fields present in the body, refreshes `updatedAt` to `new Date().toISOString()`, runs `db.update(ideas).set(patch).where(eq(ideas.id, id)).returning().get()`. Returns the row, or 404 if no row matched.\n  - `DELETE(_, { params })` runs `db.delete(ideas).where(eq(ideas.id, id)).returning().get()`. Returns `{ success: true }`, or 404 if nothing was deleted.\n\nImports: `NextResponse`, `db`, `ideas`, `eq` from 'drizzle-orm'. In Next 16, `params` is a Promise — `await ctx.params` first.\n\nThe session is incomplete unless app/api/ideas/[id]/route.ts exists on disk.",
+      "acceptanceCriteria": "- app/api/ideas/[id]/route.ts exists and exports PATCH + DELETE\n- PATCH on a nonexistent id returns 404\n- DELETE on a nonexistent id returns 404\n- A successful DELETE removes the row from subsequent GET /api/ideas results",
+      "priority": 5,
+      "dependsOn": ["api-list-create"]
+    },
+    {
+      "key": "layout",
+      "title": "Layout shell with sidebar",
+      "category": "functional",
+      "description": "ACTION: replace the default app/layout.tsx body with a sidebar + main content shell.\n\nFILE YOU MUST EDIT (use Edit, NOT Write — keep the existing imports + metadata + html/body wrapper):\n- `app/layout.tsx` — inside the `<body>` element, render:\n  ```tsx\n  <div className=\"flex min-h-screen bg-stone-50\">\n    <aside className=\"w-60 bg-stone-100 border-r border-stone-200 p-4 flex flex-col gap-2\">\n      <button type=\"button\" className=\"px-3 py-2 rounded-md border border-stone-300 bg-white text-sm text-stone-800 hover:bg-stone-50\">Add New Idea</button>\n      <button type=\"button\" className=\"px-3 py-2 rounded-md border border-stone-300 bg-white text-sm text-stone-800 hover:bg-stone-50\">View All Ideas</button>\n    </aside>\n    <main className=\"flex-1 p-6\">{children}</main>\n  </div>\n  ```\n- Buttons have NO click handlers yet — visual shell only.\n\nThe session is incomplete unless app/layout.tsx now contains the sidebar markup. Reading it without editing it does NOT complete this feature.",
+      "acceptanceCriteria": "- app/layout.tsx renders a flex container with a 240px-wide sidebar and a main content area\n- Sidebar contains 'Add New Idea' and 'View All Ideas' buttons\n- Main background is bg-stone-50, sidebar is bg-stone-100\n- The layout still wraps `{children}` so child routes render inside <main>",
+      "priority": 6,
+      "dependsOn": ["scaffold"]
+    },
+    {
+      "key": "table",
+      "title": "Ideas table UI",
+      "category": "functional",
+      "description": "ACTION: replace app/page.tsx with a client component that fetches /api/ideas and renders a table.\n\nFILE YOU MUST WRITE (overwriting the create-next-app default):\n- `app/page.tsx` — starts with `\"use client\";`, uses React.useEffect to fetch /api/ideas on mount, stores the result in state, renders a `<table>` with the columns: name, status, marketSector, progressPercent, githubUrl, productionUrl. URLs render as `<a href={...} target=\"_blank\" rel=\"noreferrer\">{...}</a>`. Progress shown as `${row.progressPercent}%`. Show 'No ideas yet' when the array is empty.\n\nUse Tailwind classes for table styling (`min-w-full`, `text-sm`, `border-collapse`, `text-left p-2`, etc.).\n\nThe session is incomplete unless app/page.tsx no longer matches the create-next-app default and instead renders the ideas table.",
+      "acceptanceCriteria": "- app/page.tsx is a client component (\"use client\" directive)\n- Fetches /api/ideas on mount\n- Renders a table with the 6 specified columns\n- Empty state: 'No ideas yet'\n- githubUrl and productionUrl render as anchor tags with target=_blank and rel=noreferrer",
+      "priority": 7,
+      "dependsOn": ["api-list-create", "layout"]
+    },
+    {
+      "key": "add-modal",
+      "title": "Add idea modal",
+      "category": "functional",
+      "description": "ACTION: build an Add Idea modal and wire it to the sidebar button.\n\nFILES YOU MUST CREATE OR EDIT:\n- `components/AddIdeaModal.tsx` (use Write) — a client component that renders a fixed-position overlay with a form. Form fields: name (required text), description (textarea), status (select: idea/building/launched), githubUrl (text), localRepoPath (text), productionUrl (text), marketSector (text), progressPercent (number 0-100). On submit, POST to /api/ideas with the form data; on success call props.onAdded() and props.onClose(). Validate that `name` is non-empty before submit; if empty show an inline error and do not POST. ESC key dismisses (use a useEffect with keydown listener).\n- `app/page.tsx` (use Edit) — add a state `showAddModal`, render `<AddIdeaModal open={showAddModal} onClose={...} onAdded={refetch} />`.\n- `app/layout.tsx` (use Edit) — extract the 'Add New Idea' button into something the page can listen to, OR move the button + modal into a shared client component. Simplest path: turn the layout's sidebar into a client component that exposes the open-modal action via a context or a simple window event.\n\nThe session is incomplete unless components/AddIdeaModal.tsx exists AND the page can open it.",
+      "acceptanceCriteria": "- components/AddIdeaModal.tsx exists and renders a form covering all 8 fields\n- Clicking 'Add New Idea' opens the modal\n- ESC and a close button dismiss the modal\n- Submitting with a name value adds a row to the table without a full page reload\n- Submitting without a name shows an inline error and does NOT POST",
+      "priority": 8,
+      "dependsOn": ["table"]
+    },
+    {
+      "key": "edit-delete",
+      "title": "Inline edit and delete",
+      "category": "functional",
+      "description": "ACTION: add per-row Edit and Delete buttons to the ideas table.\n\nFILES YOU MUST EDIT (use Edit):\n- `app/page.tsx` — add a final 'Actions' column to the table; each row gets two buttons: Edit and Delete.\n  - Edit: opens the existing AddIdeaModal in edit mode (pre-populated with the row's current values). On save it must call PATCH /api/ideas/[id] with the changed fields, refresh the table, and close the modal.\n  - Delete: calls `window.confirm('Delete this idea?')`. If confirmed, DELETE /api/ideas/[id], then refresh the table.\n- `components/AddIdeaModal.tsx` — extend with an optional `initialValues` prop and an `editingId` prop. When editingId is set, the submit handler must PATCH /api/ideas/[editingId] instead of POSTing.\n\nThe session is incomplete unless the table has visible Edit and Delete buttons that call the API.",
+      "acceptanceCriteria": "- Each row has visible Edit and Delete buttons\n- Edit pre-populates the modal with the row's current values\n- Saving the edit issues a PATCH and the row reflects the new values without a page reload\n- Delete prompts via window.confirm; cancelling does nothing\n- Confirming Delete issues a DELETE and the row disappears",
+      "priority": 9,
+      "dependsOn": ["add-modal", "api-update-delete"]
+    },
+    {
+      "key": "sort-search",
+      "title": "Sortable columns and search",
+      "category": "functional",
+      "description": "ACTION: add column sorting and a name/marketSector search input to the ideas table.\n\nFILE YOU MUST EDIT (use Edit on app/page.tsx):\n- Add local state: `sortKey` ('name' | 'status' | 'marketSector' | 'progressPercent' | null), `sortDir` ('asc' | 'desc'), and `searchQuery` (string).\n- Above the table, render a search input bound to `searchQuery`. Filter rows by name OR marketSector using a case-insensitive substring match BEFORE sorting.\n- Make name, status, marketSector, progressPercent column headers clickable — clicking toggles sortKey/sortDir. Render ▲ on the active column when sortDir=='asc' and ▼ when sortDir=='desc'. URL columns are NOT sortable.\n- Apply sort + filter via React.useMemo so the table re-renders correctly.\n\nThe session is incomplete unless app/page.tsx now has both the search input AND clickable sort headers.",
+      "acceptanceCriteria": "- A search input renders above the table\n- Typing in it filters rows in real time (case-insensitive substring on name OR marketSector)\n- Clicking a sortable header toggles asc → desc → asc and shows ▲ or ▼\n- Search and sort compose: searching first, then sorting, keeps the filter active\n- URL columns (githubUrl, productionUrl) are not sortable and do not show indicators",
+      "priority": 10,
+      "dependsOn": ["edit-delete"]
+    }
+  ]
+}

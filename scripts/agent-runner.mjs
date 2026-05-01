@@ -379,6 +379,13 @@ function buildCodingSystemPrompt(projectDir, additionalInstructions, devServerPo
 You have been handed ONE backlog feature for a local project. Implement it
 end-to-end using the tools available (read, write, edit, bash, grep, find, ls).
 
+THE MOST IMPORTANT RULE: a feature is NOT complete until you have actually
+WRITTEN or EDITED files on disk. Reading, listing, searching, and finding are
+preparation; they are not implementation. If your tool-call history for this
+session contains zero Write/Edit/Bash invocations, you have NOT done the work
+— do not summarise or claim success. The harness will detect this and reject
+the session.
+
 THE WORKSPACE IS ${projectDir}
 This is your cwd and the ONLY directory you may modify. Every path you pass
 to Write/Edit must resolve inside ${projectDir}. Use relative paths when you
@@ -387,18 +394,26 @@ commands must not cd out of this directory or touch files above it. Writes
 to ancestor directories will be refused by the runtime.
 
 Workflow:
-1. Read any existing source files you need to understand context (package.json,
-   the app entry point, relevant modules).
-2. Implement the feature — create/modify real source files, wire up routes,
-   update schemas, etc. Do NOT stub, mock, or leave TODOs.
+1. Read existing source files you need to understand context (package.json,
+   the app entry point, relevant modules). Keep this phase short — the goal
+   is implementation, not exhaustive analysis.
+2. IMPLEMENT THE FEATURE — call Write to create new files, Edit to change
+   existing ones, Bash to run install / migration / build commands. Multi-
+   step features need MULTIPLE write/edit/bash calls; one read followed by a
+   summary is incomplete.
 3. Run the project's type-check / build / tests with Bash if they exist. Fix
    any failures you introduce before finishing.
-4. When you are confident the feature works, STOP calling tools and reply with
-   a short sentence summarising what you changed.
+4. SELF-CHECK before stopping: count the Write/Edit/Bash calls you have made
+   this session. If the count is zero AND the feature description asks for
+   file changes (almost every feature does), you are NOT done. Go back to
+   step 2 and actually implement.
+5. When the feature legitimately works, STOP calling tools and reply with a
+   short sentence listing the files you created/modified.
 
 Rules:
 - Every change must actually modify a file on disk. Describing the change in
-  prose does not count as implementing it.
+  prose, or in an assistant message, or in a "plan" — none of those count.
+  Only Write/Edit/Bash count.
 - Prefer small, focused edits to existing files over creating new scaffolding.
 - Do NOT ask the user questions. Make reasonable assumptions and note them
   in your final reply.
@@ -562,6 +577,65 @@ function makeWorkspaceGuardExtension(projectDir, onDenied) {
   };
 }
 
+/**
+ * Take a lightweight content-fingerprint of a project working directory so
+ * we can detect whether an agent session actually produced filesystem
+ * mutations. Skips `.pi/` (LocalForge's own metadata folder) and
+ * `node_modules/` (so we don't walk hundreds of MB; an `npm install` will
+ * still be detected via the existence of the top-level `node_modules` dir
+ * and any package-lock.json / package.json that were created or touched).
+ *
+ * The fingerprint is the sum of (path-length + file-size + mtime-epoch)
+ * across every tracked file, joined with the count. A change in any
+ * tracked file (creation, deletion, content edit, rename) bumps it.
+ *
+ * Capped at 10000 entries so a freak case doesn't tank the run.
+ */
+function fingerprintProjectDir(projectDir) {
+  const SKIP_DIRS = new Set([".pi", "node_modules", ".git", ".next"]);
+  let count = 0;
+  let sum = 0;
+  function walk(dir, depth) {
+    if (depth > 6 || count > 10000) return;
+    let entries;
+    try {
+      entries = fs.readdirSync(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    for (const e of entries) {
+      if (count > 10000) return;
+      const name = e.name;
+      const p = path.join(dir, name);
+      if (e.isDirectory()) {
+        // Track presence of skipped directories themselves (their existence
+        // is a meaningful signal — `node_modules` appearing after a session
+        // means `npm install` ran) but don't descend into them.
+        if (SKIP_DIRS.has(name)) {
+          count++;
+          sum += p.length + 1;
+          continue;
+        }
+        walk(p, depth + 1);
+      } else {
+        try {
+          const stat = fs.statSync(p);
+          count++;
+          sum += p.length + stat.size + Math.floor(stat.mtimeMs);
+        } catch {
+          /* deleted between readdir and stat — ignore */
+        }
+      }
+    }
+  }
+  try {
+    walk(projectDir, 0);
+  } catch {
+    /* ignore */
+  }
+  return { count, sum };
+}
+
 function buildUserPrompt(feature) {
   const title = feature.title ?? "";
   const description = feature.description ?? "";
@@ -619,6 +693,55 @@ function isTransientError(errorMessage) {
   return transientPatterns.some((p) => lower.includes(p.toLowerCase()));
 }
 
+// Errors that will recur every time the same model + provider is used. Retrying
+// these — or demoting + re-picking the same feature — wastes tokens and turns
+// into a tight failure loop in the UI. The orchestrator treats permanent
+// failures specially: the feature is removed from the picker for the rest of
+// the process lifetime and a guidance message is surfaced to the user.
+function isPermanentError(errorMessage) {
+  if (!errorMessage) return false;
+  // Substring patterns — these are unique enough that plain `includes` is safe.
+  const permanentPatterns = [
+    "does not support tools",
+    "tool use is not supported",
+    "tools is not supported",
+    "model not found",
+    "unknown model",
+    "invalid api key",
+    "incorrect api key",
+    "unauthorized",
+    // Resource-exhaustion errors. Retrying immediately won't help — the user
+    // has to free RAM (close apps, stop other Ollama models) or switch to a
+    // smaller model. Once they fix it and click Start again the blocklist
+    // clears, so the trade-off is the same as the tool-support patterns.
+    "requires more system memory",
+    "out of memory",
+    "cuda out of memory",
+  ];
+  const lower = errorMessage.toLowerCase();
+  if (permanentPatterns.some((p) => lower.includes(p))) return true;
+  // HTTP status codes need word-boundary matching — bare "401"/"403" as
+  // substrings can appear in unrelated tokens (model ids, port numbers,
+  // payload bytes) and would otherwise misclassify transient errors as
+  // permanent. Match only when they appear as standalone digits.
+  return /\b(401|403)\b/.test(lower);
+}
+
+// Sub-classifier for the permanent-error guidance message. Two distinct
+// failure shapes today and they need different remediation copy:
+//   - tool-call incompatibility → switch to a model that supports tools
+//   - resource exhaustion       → free RAM or pick a smaller model
+function isMemoryExhaustionError(errorMessage) {
+  if (!errorMessage) return false;
+  const patterns = [
+    "requires more system memory",
+    "out of memory",
+    "cuda out of memory",
+  ];
+  const lower = errorMessage.toLowerCase();
+  return patterns.some((p) => lower.includes(p));
+}
+
 function sleep(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms));
 }
@@ -646,6 +769,19 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
     promptLength: userPrompt.length,
   });
 
+  // Snapshot the working directory before the session runs so we can detect
+  // whether the agent produced any real filesystem mutations. Counterpart
+  // snapshot is taken after the session ends. Used by the confabulation
+  // guard below — many small models on Ollama emit JSON-shaped tool calls
+  // as plain assistant text, so they can produce non-zero `toolCalls`
+  // (e.g. one probing read) and still write nothing to disk.
+  const dirBefore = fingerprintProjectDir(projectDir);
+  debugLog("WORKSPACE_FINGERPRINT_BEFORE", {
+    projectDir,
+    count: dirBefore.count,
+    sum: dirBefore.sum,
+  });
+
   let toolCalls = 0;
   let lastAssistantText = "";
   let resultSubtype = "success";
@@ -653,6 +789,44 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
   let messageCount = 0;
   let turns = 0;
   let maxTurnsExceeded = false;
+
+  // ENH-007 — idle-stop heuristic.
+  //
+  // Some local models (observed live with gpt-oss:20b on Ollama) complete the
+  // real work for a feature in the first few minutes and then enter a loop of
+  // hallucinated / no-op tool calls — repeated `Read package.json`,
+  // `Listing files`, made-up tool names — until the 30-minute session
+  // watchdog forcibly terminates the runner. The watchdog's `terminated`
+  // outcome demotes the feature back to backlog despite the work being
+  // legitimately done, wasting both the rest of that session and the work
+  // already on disk.
+  //
+  // The fix: a separate, faster idle detector that runs in parallel with the
+  // watchdog. Every IDLE_CHECK_INTERVAL_MS we re-fingerprint the project
+  // directory and bump `lastFsChangeAt` if it changed; we also track the
+  // start/end timestamps of `bash` tool calls so a long-running install
+  // (which may not move the fingerprint until it finishes) doesn't trip the
+  // detector. If neither has moved in the last IDLE_STOP_MS, we gracefully
+  // abort the Pi session — the regular result-handling path runs after, and
+  // the existing fingerprint guard correctly distinguishes:
+  //   - work was done before the idle stretch → fs changed → success
+  //   - no work ever happened → fs unchanged → confabulation rejection
+  //
+  // Configurable via LOCALFORGE_IDLE_STOP_MS (default 300_000 = 5 minutes);
+  // set to 0 to disable and fall back to the 30-minute watchdog only.
+  const idleStopMsRaw = Number.parseInt(
+    process.env.LOCALFORGE_IDLE_STOP_MS ?? "300000",
+    10,
+  );
+  const idleStopMs =
+    Number.isFinite(idleStopMsRaw) && idleStopMsRaw > 0 ? idleStopMsRaw : 0;
+  const IDLE_CHECK_INTERVAL_MS = 30_000;
+  const sessionStartAt = Date.now();
+  let lastFsChangeAt = sessionStartAt;
+  let lastBashEndAt = sessionStartAt;
+  let inProgressBashStartAt = null;
+  let lastDirSnapshot = dirBefore;
+  let idleStopTriggered = false;
 
   try {
     const piRuntime = createPiModelRuntime({ provider, baseUrl, model });
@@ -663,6 +837,25 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       noSkills: true,
       noPromptTemplates: true,
       noThemes: true,
+      // BUG-006: do NOT auto-load CLAUDE.md / AGENTS.md / etc. from the
+      // project's cwd or any parent directory. The default Pi loader
+      // walks up the dir tree looking for context files; when a project
+      // sits inside the LocalForge repo (the default install layout —
+      // `H:\localforge\projects\<name>\`), the loader hops two levels
+      // up and ingests the harness's own `CLAUDE.md` — which is the
+      // user-facing project-assistant rulebook ("READ-only, cannot run
+      // bash, cannot modify source code"). The coding agent then dutifully
+      // refuses to scaffold anything. Verified live 2026-04-30: gpt-oss:20b
+      // emitted "I'm only a project-assistant and don't have permission to
+      // execute shell commands" on the Author Landing scaffold step.
+      //
+      // The coding agent's actual instructions come from
+      // buildCodingSystemPrompt() below + the per-feature prompt file the
+      // orchestrator writes; nothing in the parent dir is ever the right
+      // place to add coding-agent-specific rules. So skip context-file
+      // loading entirely here. The bootstrapper route already does this
+      // via its `noContextFiles: true` helper.
+      noContextFiles: true,
       systemPrompt: buildCodingSystemPrompt(projectDir, coderPrompt, devServerPort, process.env.LOCALFORGE_PLAYWRIGHT_ENABLED === "true"),
       extensionFactories: [workspaceGuardExtension],
     });
@@ -691,6 +884,20 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
         toolCalls++;
         debugLog("PI_TOOL_USE", { toolCalls, name: event.toolName });
         emitLog(summariseToolUse(event.toolName, event.args), "action");
+        // ENH-007: track in-flight bash so a long-running install
+        // (npm install, drizzle migrate, etc.) doesn't trip the idle
+        // detector while it's actively doing work.
+        if (event.toolName === "bash") {
+          inProgressBashStartAt = Date.now();
+        }
+      } else if (event.type === "tool_execution_end") {
+        // ENH-007: bash just finished — record the timestamp and clear
+        // the in-flight marker. fingerprintProjectDir on the next idle
+        // check will pick up any files the bash command produced.
+        if (event.toolName === "bash") {
+          inProgressBashStartAt = null;
+          lastBashEndAt = Date.now();
+        }
       } else if (
         event.type === "message_update" &&
         event.assistantMessageEvent.type === "text_delta"
@@ -735,12 +942,65 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       once: true,
     });
 
+    // ENH-007: periodic idle-stop checker. Runs on a separate timer from the
+    // session itself so we can sample the project working directory without
+    // disturbing the Pi event loop. Skipped entirely when idleStopMs is 0
+    // (user-disabled) — the 30-minute watchdog still applies as a hard cap.
+    const idleCheckInterval =
+      idleStopMs > 0
+        ? setInterval(() => {
+            try {
+              const current = fingerprintProjectDir(projectDir);
+              if (
+                current.count !== lastDirSnapshot.count ||
+                current.sum !== lastDirSnapshot.sum
+              ) {
+                lastFsChangeAt = Date.now();
+                lastDirSnapshot = current;
+              }
+              if (idleStopTriggered) return;
+              // Don't terminate while a bash call is in flight — could be a
+              // long-running install that hasn't started writing yet.
+              if (inProgressBashStartAt !== null) return;
+              const idleSinceMs =
+                Date.now() - Math.max(lastFsChangeAt, lastBashEndAt);
+              if (idleSinceMs > idleStopMs) {
+                idleStopTriggered = true;
+                debugLog("IDLE_STOP_TRIGGERED", {
+                  idleSinceMs,
+                  thresholdMs: idleStopMs,
+                  lastFsChangeAt,
+                  lastBashEndAt,
+                  toolCalls,
+                });
+                emitLog(
+                  `Idle-stop: agent has produced no filesystem changes and run no bash commands for ${Math.round(
+                    idleSinceMs / 1000,
+                  )}s. Terminating session early. If real work was done before this point, the feature will still complete; otherwise the confabulation guard will reject the session as expected.`,
+                  "info",
+                );
+                void session.abort();
+              }
+            } catch (err) {
+              // Never let the idle checker take down the runner. Just log.
+              debugLog("IDLE_CHECK_ERROR", {
+                error: err instanceof Error ? err.message : String(err),
+              });
+            }
+          }, IDLE_CHECK_INTERVAL_MS)
+        : null;
+    // Don't keep Node alive solely on this interval if the runner exits for
+    // any other reason — the finally block clears it normally, this is just
+    // belt-and-suspenders.
+    idleCheckInterval?.unref?.();
+
     try {
       await session.prompt(userPrompt, {
         expandPromptTemplates: false,
         source: "extension",
       });
     } finally {
+      if (idleCheckInterval) clearInterval(idleCheckInterval);
       unsubscribe();
       session.dispose();
     }
@@ -750,6 +1010,7 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
       resultSubtype,
       turns,
       maxTurnsExceeded,
+      idleStopTriggered,
     });
   } catch (err) {
     errorMessage = err instanceof Error ? err.message : String(err);
@@ -763,22 +1024,113 @@ async function runCodingAgentOnce({ feature, projectDir, baseUrl, provider, mode
     });
   }
 
-  const ok =
+  // ENH-007: when we triggered the idle-stop, the Pi session was aborted on
+  // OUR signal — the resulting "aborted" stopReason / errorMessage is not a
+  // real failure, it's our own termination. Clear those so the regular
+  // ok-computation runs as if the session ended normally; the downstream
+  // confabulation guard then makes the actual call based on whether the
+  // project working directory changed.
+  if (idleStopTriggered) {
+    debugLog("IDLE_STOP_OVERRIDE_RESULT", {
+      previousResultSubtype: resultSubtype,
+      previousErrorMessage: errorMessage,
+    });
+    errorMessage = null;
+    resultSubtype = "success";
+  }
+
+  let ok =
     errorMessage == null &&
     (resultSubtype === "success" ||
       resultSubtype === "end_turn" ||
       resultSubtype === undefined);
 
+  // Confabulation guard. Some local-model + provider combinations (observed
+  // with qwen2.5-coder:32b and llama3.2:latest on Ollama via openai-
+  // completions) emit JSON-shaped tool calls as plain assistant text
+  // instead of structured tool_use content blocks. Pi never executes them,
+  // toolCalls stays at 0 (or, sneakier, stays at 1 from a single benign
+  // probing call), but resultSubtype is still "success" — so the
+  // orchestrator marks the feature completed despite zero filesystem
+  // mutations. The result is a 10/10 green-toast project with an empty
+  // working directory.
+  //
+  // We defend in two layers:
+  //
+  //   1. minToolCalls floor (default 1). Catches the trivial all-text
+  //      sessions. Configurable via LOCALFORGE_MIN_TOOL_CALLS.
+  //
+  //   2. Workspace-fingerprint check. Snapshots the project dir before
+  //      and after the session — if no tracked file changed (creation,
+  //      deletion, content, mtime), the agent did no real work. This
+  //      catches the toolCalls=1-but-nothing-written case. Disable via
+  //      LOCALFORGE_REQUIRE_FS_CHANGES=0 if you have a feature that
+  //      genuinely makes no filesystem changes (rare).
+  //
+  // We only override when ok is otherwise true (so we don't mask a real
+  // upstream error), and we leave permanent=false so a retry with a
+  // better-behaved model still has a chance.
+  const minToolCalls = Number.parseInt(
+    process.env.LOCALFORGE_MIN_TOOL_CALLS ?? "1",
+    10,
+  );
+  const minFloor =
+    Number.isFinite(minToolCalls) && minToolCalls >= 0 ? minToolCalls : 1;
+  const dirAfter = fingerprintProjectDir(projectDir);
+  const dirChanged =
+    dirBefore.count !== dirAfter.count || dirBefore.sum !== dirAfter.sum;
+  debugLog("WORKSPACE_FINGERPRINT_AFTER", {
+    countBefore: dirBefore.count,
+    countAfter: dirAfter.count,
+    sumBefore: dirBefore.sum,
+    sumAfter: dirAfter.sum,
+    dirChanged,
+  });
+  const requireFsChanges =
+    (process.env.LOCALFORGE_REQUIRE_FS_CHANGES ?? "1") !== "0";
+
+  let confabulation = false;
+  if (ok && toolCalls < minFloor) {
+    debugLog("CONFABULATION_GUARD_TRIPPED", {
+      reason: "tool_calls_below_floor",
+      toolCalls,
+      minFloor,
+      lastAssistantTextSnippet: lastAssistantText.slice(0, 200),
+    });
+    ok = false;
+    confabulation = true;
+    errorMessage = `Agent claimed success without invoking any tools (toolCalls=${toolCalls}, required>=${minFloor}). The model likely emitted tool calls as plain text instead of structured tool_use blocks — common with some Ollama + small-model combinations. No filesystem changes were made. Try a different model (qwen2.5-coder:7b or llama3.1:8b are reliable on Ollama), or set LOCALFORGE_MIN_TOOL_CALLS=0 if you have a feature that genuinely requires no tool calls.`;
+  } else if (ok && requireFsChanges && !dirChanged) {
+    debugLog("CONFABULATION_GUARD_TRIPPED", {
+      reason: "no_fs_changes",
+      toolCalls,
+      countBefore: dirBefore.count,
+      countAfter: dirAfter.count,
+      lastAssistantTextSnippet: lastAssistantText.slice(0, 200),
+    });
+    ok = false;
+    confabulation = true;
+    errorMessage = `Agent claimed success but the project working directory is unchanged (toolCalls=${toolCalls}, fingerprint stable). The session likely made one or two probing tool calls and then confabulated completion without writing or modifying any files. Try a different model (qwen2.5-coder:7b or llama3.1:8b are reliable on Ollama), or set LOCALFORGE_REQUIRE_FS_CHANGES=0 if this feature genuinely makes no filesystem changes.`;
+  }
+
   debugLog("PI_SESSION_RESULT", {
     ok,
     errorMessage,
+    confabulation,
     resultSubtype,
     toolCalls,
     messageCount,
     lastAssistantTextSnippet: lastAssistantText.slice(0, 200),
   });
 
-  return { ok, toolCalls, lastAssistantText, resultSubtype, errorMessage };
+  return {
+    ok,
+    toolCalls,
+    lastAssistantText,
+    resultSubtype,
+    errorMessage,
+    confabulation,
+  };
 }
 
 async function runCodingAgent(params) {
@@ -794,14 +1146,21 @@ async function runCodingAgent(params) {
       return result;
     }
 
-    const transient = isTransientError(result.errorMessage);
+    const permanent = isPermanentError(result.errorMessage);
+    const transient = !permanent && isTransientError(result.errorMessage);
     debugLog("RETRY_WRAPPER_FAILED_ATTEMPT", {
       attempt,
       errorMessage: result.errorMessage,
       resultSubtype: result.resultSubtype,
+      isPermanent: permanent,
       isTransient: transient,
       willRetry: attempt < maxRetries && transient,
     });
+
+    if (permanent) {
+      debugLog("RETRY_WRAPPER_PERMANENT_ERROR", { errorMessage: result.errorMessage });
+      return { ...result, permanent: true };
+    }
 
     if (attempt < maxRetries && transient) {
       const delay = RETRY_DELAY_MS * attempt;
@@ -928,8 +1287,12 @@ async function main() {
     });
 
     if (!result || !result.ok) {
+      const permanent = Boolean(result?.permanent);
+      const confabulation = Boolean(result?.confabulation);
       debugLog("OUTCOME_FAILURE_FROM_PI", {
         reason: result?.errorMessage ?? result?.resultSubtype,
+        permanent,
+        confabulation,
       });
       emitLog(
         `Agent session ended without success (${codingMs}ms, ${
@@ -939,13 +1302,26 @@ async function main() {
         }`,
         "error",
       );
+      if (permanent) {
+        const guidance = isMemoryExhaustionError(result?.errorMessage)
+          ? `This error will not resolve on retry — loading the model "${model}" needs more memory than is currently free. Close other heavy apps (browsers with many tabs, IDEs, other model servers), or run \`ollama stop <other-model>\` if a different model is loaded, or pick a smaller model in settings. Then click Start again.`
+          : `This error will not resolve on retry — the configured model "${model}" is incompatible with the agent (e.g. lacks tool-call support). Switch to a tool-capable model in settings (try llama3.2, qwen2.5-coder, or mistral-nemo on Ollama) and click Start again.`;
+        emitLog(guidance, "error");
+      }
       emit({
         type: "done",
         outcome: "failure",
         reason: result?.errorMessage ?? `result ${result?.resultSubtype ?? "unknown"}`,
+        permanent,
+        confabulation,
       });
       doneEmitted = true;
-      debugLog("DONE_EMITTED", { outcome: "failure", phase: "pi" });
+      debugLog("DONE_EMITTED", {
+        outcome: "failure",
+        phase: "pi",
+        permanent,
+        confabulation,
+      });
       process.stdout.write("", () => process.exit(1));
       return;
     }
