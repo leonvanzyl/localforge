@@ -4,6 +4,8 @@ node_modules/
 .pnp.js
 .yarn/
 
+tmp/
+
 # Testing
 /coverage
 .playwright-cli/
