@@ -9,7 +9,8 @@ import {
 } from "@/components/forge/agent-pods";
 import { AgentLogModal } from "@/components/forge/modals";
 import { ForgeKanban } from "@/components/forge/forge-kanban";
-import { SettingsIcon } from "@/components/forge/icons";
+import { SettingsIcon, PlayIcon } from "@/components/forge/icons";
+import { ExternalLink, Square } from "lucide-react";
 import { ProjectSettingsDialog } from "@/components/app-shell/project-settings-dialog";
 import { pickAgentName } from "@/components/forge/agent-names";
 
@@ -77,6 +78,9 @@ export function ProjectView({ project }: ProjectViewProps) {
   );
   const [logModalOpen, setLogModalOpen] = React.useState(false);
   const [settingsOpen, setSettingsOpen] = React.useState(false);
+  const [devServerRunning, setDevServerRunning] = React.useState(false);
+  const [devServerPort, setDevServerPort] = React.useState<string | null>(null);
+  const [devServerStarting, setDevServerStarting] = React.useState(false);
 
   // Stable refs for context setters so they don't cause effect re-runs
   const setIsRunningRef = React.useRef(setIsRunning);
@@ -101,6 +105,65 @@ export function ProjectView({ project }: ProjectViewProps) {
   }, [project.id]);
 
   const projectId = project.id;
+
+  // Poll dev server status
+  React.useEffect(() => {
+    let cancelled = false;
+    async function checkDevServer() {
+      try {
+        const res = await fetch(`/api/projects/${projectId}/dev-server`);
+        const data = await res.json();
+        if (!cancelled) {
+          setDevServerRunning(!!data.running);
+          setDevServerPort(data.port ?? null);
+        }
+      } catch {
+        if (!cancelled) setDevServerRunning(false);
+      }
+    }
+    checkDevServer();
+    const interval = setInterval(checkDevServer, 5000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [projectId]);
+
+  async function handleStartDevServer() {
+    setDevServerStarting(true);
+    try {
+      const res = await fetch(`/api/projects/${projectId}/dev-server`, {
+        method: "POST",
+      });
+      const data = await res.json();
+      if (data.running) {
+        setDevServerRunning(true);
+        setDevServerPort(data.port);
+      }
+    } catch {
+      // ignore
+    } finally {
+      setDevServerStarting(false);
+    }
+  }
+
+  async function handleStopDevServer() {
+    try {
+      await fetch(`/api/projects/${projectId}/dev-server`, {
+        method: "DELETE",
+      });
+      setDevServerRunning(false);
+      setDevServerPort(null);
+    } catch {
+      // ignore
+    }
+  }
+
+  function handleOpenDevServer() {
+    if (devServerPort) {
+      window.open(`http://localhost:${devServerPort}`, "_blank");
+    }
+  }
 
   // Fetch feature counts
   const fetchFeatureCounts = React.useCallback(async () => {
@@ -372,16 +435,57 @@ export function ProjectView({ project }: ProjectViewProps) {
             </span>
           </h1>
         </div>
-        <button
-          type="button"
-          onClick={() => setSettingsOpen(true)}
-          className="btn icon-btn ghost"
-          aria-label={`Open project settings for ${project.name}`}
-          data-testid="project-settings-button"
-          style={{ marginRight: 8 }}
-        >
-          <SettingsIcon size={16} />
-        </button>
+        <div style={{ display: "flex", alignItems: "center", gap: 4 }}>
+          <button
+            type="button"
+            onClick={() => setSettingsOpen(true)}
+            className="btn icon-btn ghost"
+            aria-label={`Open project settings for ${project.name}`}
+            data-testid="project-settings-button"
+          >
+            <SettingsIcon size={16} />
+          </button>
+          {devServerRunning ? (
+            <>
+              <button
+                type="button"
+                onClick={handleOpenDevServer}
+                className="btn ghost"
+                aria-label="Open dev server in browser"
+                title={`Open http://localhost:${devServerPort}`}
+                data-testid="open-dev-server-button"
+                style={{ fontSize: "0.75rem", gap: 4, padding: "4px 8px" }}
+              >
+                <ExternalLink size={14} />
+                <span>:{devServerPort}</span>
+              </button>
+              <button
+                type="button"
+                onClick={handleStopDevServer}
+                className="btn icon-btn ghost"
+                aria-label="Stop dev server"
+                title="Stop dev server"
+                data-testid="stop-dev-server-button"
+              >
+                <Square size={12} />
+              </button>
+            </>
+          ) : (
+            <button
+              type="button"
+              onClick={handleStartDevServer}
+              disabled={devServerStarting}
+              className="btn ghost"
+              aria-label="Start dev server"
+              title="Start dev server"
+              data-testid="start-dev-server-button"
+              style={{ fontSize: "0.75rem", gap: 4, padding: "4px 8px" }}
+            >
+              <PlayIcon size={12} />
+              <span>{devServerStarting ? "Starting…" : "Dev Server"}</span>
+            </button>
+          )}
+        </div>
         <div className="head-stats">
           <div className="stat">
             <div className="v">{backlogCount}</div>
