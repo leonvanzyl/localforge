@@ -2,7 +2,7 @@
 
 import * as React from "react";
 import { useRouter } from "next/navigation";
-import { Loader2, Sparkles, FolderPlus } from "lucide-react";
+import { Loader2, Sparkles, FolderPlus, Gamepad2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
@@ -35,7 +35,7 @@ import { useShell } from "./shell-context";
  *                               bootstrapper chat panel (Feature #55).
  */
 
-type CreateMode = "blank" | "ai";
+type CreateMode = "blank" | "ai" | "example";
 
 /** Mirrors lib/projects.ts MAX_PROJECT_NAME_LENGTH on the server. */
 const MAX_PROJECT_NAME_LENGTH = 120;
@@ -83,45 +83,58 @@ export function NewProjectDialog() {
     setSubmitting(true);
     setError(null);
     try {
-      const res = await fetch("/api/projects", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: trimmed }),
-      });
-      const data = (await res.json().catch(() => ({}))) as {
-        project?: { id: number; name: string };
-        error?: string;
-      };
-      if (!res.ok || !data.project) {
-        throw new Error(data.error || `Request failed (${res.status})`);
-      }
+      let projectId: number;
 
-      // When the user chose the AI bootstrapper, kick off a session so the
-      // project page can render the chat interface immediately on load.
-      if (mode === "ai") {
-        try {
-          const sessRes = await fetch(
-            `/api/projects/${data.project.id}/bootstrapper-session`,
-            { method: "POST" },
-          );
-          if (!sessRes.ok) {
-            // Non-fatal: still navigate to the project so the user isn't
-            // stuck. The project page can offer a retry if needed.
-            // eslint-disable-next-line no-console
-            console.error(
-              "[localforge] failed to start bootstrapper session:",
-              sessRes.status,
+      if (mode === "example") {
+        const res = await fetch("/api/projects/load-example", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ example: "retro-arcade", name: trimmed }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          project?: { id: number; name: string };
+          error?: string;
+        };
+        if (!res.ok || !data.project) {
+          throw new Error(data.error || `Request failed (${res.status})`);
+        }
+        projectId = data.project.id;
+      } else {
+        const res = await fetch("/api/projects", {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ name: trimmed }),
+        });
+        const data = (await res.json().catch(() => ({}))) as {
+          project?: { id: number; name: string };
+          error?: string;
+        };
+        if (!res.ok || !data.project) {
+          throw new Error(data.error || `Request failed (${res.status})`);
+        }
+        projectId = data.project.id;
+
+        if (mode === "ai") {
+          try {
+            const sessRes = await fetch(
+              `/api/projects/${projectId}/bootstrapper-session`,
+              { method: "POST" },
             );
+            if (!sessRes.ok) {
+              console.error(
+                "[localforge] failed to start bootstrapper session:",
+                sessRes.status,
+              );
+            }
+          } catch (err) {
+            console.error("[localforge] bootstrapper session error:", err);
           }
-        } catch (err) {
-          // eslint-disable-next-line no-console
-          console.error("[localforge] bootstrapper session error:", err);
         }
       }
 
       await refreshProjects();
       closeNewProjectDialog();
-      router.push(`/projects/${data.project.id}`);
+      router.push(`/projects/${projectId}`);
       router.refresh();
     } catch (err) {
       setError(err instanceof Error ? err.message : "Failed to create project");
@@ -188,7 +201,7 @@ export function NewProjectDialog() {
             <legend className="text-sm font-medium text-foreground">
               How do you want to start?
             </legend>
-            <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+            <div className="grid grid-cols-1 gap-2 sm:grid-cols-3">
               <ModeCard
                 value="blank"
                 selected={mode === "blank"}
@@ -208,6 +221,16 @@ export function NewProjectDialog() {
                 title="Describe your project to AI"
                 description="Chat with the bootstrapper to generate features."
                 testId="new-project-mode-ai"
+              />
+              <ModeCard
+                value="example"
+                selected={mode === "example"}
+                onSelect={setMode}
+                disabled={submitting}
+                icon={<Gamepad2 className="h-4 w-4" aria-hidden="true" />}
+                title="Load an example"
+                description="Load a retro arcade game with 47 pre-built features."
+                testId="new-project-mode-example"
               />
             </div>
           </fieldset>
@@ -241,10 +264,12 @@ export function NewProjectDialog() {
             {submitting ? (
               <>
                 <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
-                Creating…
+                {mode === "example" ? "Loading example…" : "Creating…"}
               </>
             ) : mode === "ai" ? (
               "Create & chat with AI"
+            ) : mode === "example" ? (
+              "Load example project"
             ) : (
               "Create project"
             )}

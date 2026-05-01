@@ -1,16 +1,40 @@
 "use client";
 
+import * as React from "react";
 import Image from "next/image";
-import { Sparkles } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { Sparkles, Gamepad2 } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import { useShell } from "./shell-context";
 
 export function EmptyState() {
-  const { openNewProjectDialog } = useShell();
+  const { openNewProjectDialog, refreshProjects } = useShell();
+  const router = useRouter();
+  const [loadingExample, setLoadingExample] = React.useState(false);
 
   function openHelp() {
     window.dispatchEvent(new CustomEvent("help:open"));
+  }
+
+  async function handleLoadExample() {
+    setLoadingExample(true);
+    try {
+      const res = await fetch("/api/projects/load-example", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ example: "retro-arcade" }),
+      });
+      const data = await res.json();
+      if (!res.ok || !data.project) {
+        throw new Error(data.error || "Failed to load example");
+      }
+      await refreshProjects();
+      router.push(`/projects/${data.project.id}`);
+      router.refresh();
+    } catch {
+      setLoadingExample(false);
+    }
   }
 
   return (
@@ -63,7 +87,7 @@ export function EmptyState() {
           feature — no cloud, no API keys, just your machine. Get started by
           creating your first project.
         </p>
-        <div className="mt-8 flex justify-center">
+        <div className="mt-8 flex flex-col items-center gap-3 sm:flex-row sm:justify-center">
           <Button
             size="lg"
             onClick={openNewProjectDialog}
@@ -71,6 +95,16 @@ export function EmptyState() {
           >
             <Sparkles className="h-4 w-4" aria-hidden="true" />
             Create Your First Project
+          </Button>
+          <Button
+            size="lg"
+            variant="outline"
+            onClick={handleLoadExample}
+            disabled={loadingExample}
+            data-testid="empty-state-example-cta"
+          >
+            <Gamepad2 className="h-4 w-4" aria-hidden="true" />
+            {loadingExample ? "Loading…" : "Try an Example"}
           </Button>
         </div>
         <p className="mt-6 text-xs text-muted-foreground">
