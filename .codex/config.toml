@@ -1,0 +1,7 @@
+[mcp_servers.playwright]
+args = [
+    "/c",
+    "npx",
+    "@playwright/mcp@latest",
+]
+command = "cmd"
